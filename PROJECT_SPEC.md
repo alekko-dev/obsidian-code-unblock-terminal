@@ -482,6 +482,11 @@ Exit code: 1
 - Emits resize notifications that are consumed by the native resize helper when Windows-specific buffer adjustments are required.
 - Responsible for reconnect logic and detecting abnormal PTY exits to drive user-facing error handling.
 
+**Cross-platform benefits:**
+- `node-pty` ships with native backends for Windows (ConPTY), macOS, and Linux (forkpty), giving us a consistent API surface.
+- Reduces the amount of platform-specific process code required for the planned macOS and Linux phases.
+- Simplifies future Phase 7/8 work by keeping PTY responsibilities centralized in one module regardless of platform.
+
 #### 8.3 Native Addons (Node.js)
 **Purpose:** Replace Python dependency for terminal resizing
 
