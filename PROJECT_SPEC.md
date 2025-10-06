@@ -20,8 +20,6 @@ A Windows-first terminal integration plugin for Obsidian with planned cross-plat
   - PowerShell Core (pwsh)
   - Windows PowerShell (powershell)
   - WSL (Windows Subsystem for Linux) - all distributions
-  - Command Prompt (cmd)
-  - Git Bash
 - **External Terminal:** Windows Terminal integration
 
 ## Core Use Case
@@ -94,14 +92,6 @@ All shells run inside Obsidian terminal panel using xterm.js:
 - Full Linux environment support
 - Tab completion and colors
 
-**Command Prompt (cmd):**
-- Basic cmd.exe integration
-- Color support where available
-
-**Git Bash:**
-- Auto-detect installation location
-- Unix-like commands on Windows
-
 #### 2.2 External Terminal (Windows Terminal)
 - Launch Windows Terminal in separate window
 - Opens at vault directory or context folder
@@ -141,7 +131,7 @@ All shells run inside Obsidian terminal panel using xterm.js:
 #### 4.1 Code Block Detection
 **Automatic scanning of active markdown file:**
 - Detects all code blocks in current document
-- Supported languages: `bash`, `sh`, `powershell`, `ps`, `cmd`, `batch`
+- Supported languages: `bash`, `sh`, `powershell`, `ps`
 - Updates list when switching files or editing
 - Shows code block preview with line numbers
 
@@ -223,7 +213,6 @@ docker push $PROJECT_NAME:$VERSION
 **Variable formats detected:**
 - PowerShell: `$VarName`, `${VarName}`
 - Bash/WSL: `$VAR_NAME`, `${VAR_NAME}`
-- Batch/CMD: `%VAR_NAME%`
 - Environment variables are excluded (PATH, HOME, etc.)
 
 **Smart substitution:**
@@ -352,7 +341,6 @@ Default behavior executes multi-line code blocks as a single command, with an op
 │ Supported languages:                      │
 │ ☑ bash/sh                                 │
 │ ☑ PowerShell                              │
-│ ☑ cmd/batch                               │
 │                                           │
 │ Button position:                          │
 │ ● Top-right of code block                │
@@ -558,7 +546,7 @@ obsidian-code-unblock-terminal/
 
 #### Phase 3: Code Block Integration (Week 2)
 - [ ] Code block detection in active file
-- [ ] Variable/parameter parsing (PowerShell, Bash, CMD syntax)
+- [ ] Variable/parameter parsing (PowerShell and Bash syntax)
 - [ ] Code block list view in terminal panel
 - [ ] Inline run buttons (viewing + editing mode)
 - [ ] Variable substitution dialog
