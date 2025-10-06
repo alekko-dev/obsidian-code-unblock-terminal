@@ -78,6 +78,8 @@ All shells run inside Obsidian terminal panel using xterm.js:
 
 **Note:** macOS (zsh, bash) and Linux (bash, zsh, fish) shells will be added in future releases.
 
+Interactive sessions are powered by a dedicated PTY management layer (node-pty/ConPTY) that streams data between the shell processes and xterm.js while respecting per-profile configuration.
+
 **PowerShell Core (pwsh):**
 - Full interactive session
 - Tab completion support
@@ -126,7 +128,8 @@ All shells run inside Obsidian terminal panel using xterm.js:
   - Panel is resized via drag
   - Obsidian window resizes
   - Sidebar is toggled
-- Uses native Node.js addon for Windows console buffer manipulation
+- PTY layer receives updated geometry and forwards it to the shell session
+- Uses native Node.js addon for Windows console buffer manipulation focused on resize events
 - No flickering or manual refresh needed
 
 #### 3.3 Visual Features
@@ -466,15 +469,27 @@ Exit code: 1
   - @xterm/addon-webgl or @xterm/addon-canvas (rendering)
   - @xterm/addon-ligatures (font ligatures)
   - @xterm/addon-unicode11 (Unicode support)
+- **PTY layer:**
+  - Preferred: **node-pty** ^1.0.0 (ConPTY bindings on Windows, forkpty on Unix)
+  - Alternative: custom napi-based ConPTY bindings if node-pty cannot be bundled
 
-#### 8.2 Native Addons (Node.js)
+#### 8.2 PTY Management Layer
+**Purpose:** Provide a unified interface for spawning and managing shell processes via ConPTY/PTY APIs.
+
+- `pty-manager.ts` wraps `node-pty` (or custom bindings) and exposes a strongly typed API to the rest of the plugin.
+- `shell-manager.ts` orchestrates profile selection, environment injection, and delegates lifecycle events to the PTY manager.
+- Integrates with `xterm-manager.ts` by streaming PTY output to xterm.js and writing user input back to the PTY.
+- Emits resize notifications that are consumed by the native resize helper when Windows-specific buffer adjustments are required.
+- Responsible for reconnect logic and detecting abnormal PTY exits to drive user-facing error handling.
+
+#### 8.3 Native Addons (Node.js)
 **Purpose:** Replace Python dependency for terminal resizing
 
 **Windows Native Addon (`terminal_windows.node`):**
-- Win32 API calls for console buffer manipulation
-- Process enumeration (replaces psutil)
-- Window management (replaces pywinctl)
-- Console resize operations
+- Receives resize instructions from the PTY manager to adjust underlying Win32 console buffers
+- Performs process enumeration (replaces psutil) and lightweight window management (replaces pywinctl)
+- Handles console resize operations that are outside the scope of node-pty's abstractions
+- Explicitly **does not** own PTY creation; that responsibility is isolated in the PTY layer
 - **Note:** macOS and Linux equivalents planned for future releases
 
 **Built with:**
@@ -490,7 +505,7 @@ interface TerminalNative {
 }
 ```
 
-#### 8.3 Build System
+#### 8.4 Build System
 - **Bundler:** esbuild
 - **TypeScript:** Strict mode
 - **Native compilation:** node-gyp or cargo (for Rust)
@@ -506,9 +521,10 @@ obsidian-code-unblock-terminal/
 │   ├── terminal/
 │   │   ├── terminal-view.ts    # Main terminal panel view
 │   │   ├── xterm-manager.ts    # xterm.js wrapper
-│   │   ├── shell-manager.ts    # Shell process management
+│   │   ├── shell-manager.ts    # Shell profile orchestration + PTY lifecycle hooks
 │   │   ├── profile-manager.ts  # Terminal profiles
-│   │   └── native-resize.ts    # Native addon wrapper
+│   │   ├── pty-manager.ts      # node-pty / ConPTY abstraction
+│   │   └── native-resize.ts    # Windows-specific resize helper
 │   ├── codeblock/
 │   │   ├── detector.ts         # Code block detection in markdown
 │   │   ├── executor.ts         # Code execution logic
@@ -563,11 +579,12 @@ obsidian-code-unblock-terminal/
 - [ ] Variable substitution dialog
 - [ ] Variable persistence per vault
 
-#### Phase 4: Native Addon (Week 2-3)
-- [ ] C++/Rust native addon for Windows
-- [ ] Console resize functionality
-- [ ] Process/window management
-- [ ] Build and bundle pre-compiled binaries
+#### Phase 4: PTY Integration & Native Helpers (Week 2-3)
+- [ ] Integrate node-pty (or custom ConPTY bindings) with the PTY manager module
+- [ ] Wire shell manager/xterm manager streams through the PTY layer
+- [ ] Implement Windows native resize helper focused on console buffer adjustments
+- [ ] Ensure clear separation: PTY layer owns process lifecycle; native helper handles resize/window affordances
+- [ ] Build and bundle pre-compiled binaries for the native resize helper
 
 #### Phase 5: Integration & Polish (Week 3-4)
 - [ ] Context menu integration
