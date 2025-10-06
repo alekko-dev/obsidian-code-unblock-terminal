@@ -171,12 +171,12 @@ Interactive sessions are powered by a dedicated PTY management layer (node-pty/C
 #### 4.3 Inline Code Block Buttons
 **Run button appears on hover over code blocks:**
 
-```markdown
+````markdown
 ```bash
 npm install
 npm run dev
 ```  [▶ Run in Terminal]
-```
+````
 
 **Button behavior:**
 - Appears on mouse hover over code block
@@ -191,13 +191,13 @@ npm run dev
 #### 4.4 Parameter & Variable Detection
 **Automatic detection of script parameters:**
 
-```markdown
+````markdown
 ```bash
 # Parameters detected: $PROJECT_NAME, $VERSION
 docker build -t $PROJECT_NAME:$VERSION .
 docker push $PROJECT_NAME:$VERSION
 ```
-```
+````
 
 **Parameter definition UI:**
 ```
@@ -739,3 +739,4 @@ The following features are planned for future releases after the initial Windows
 - **Distribution:** Obsidian Community Plugins
 - **Repository:** GitHub (public)
 - **Documentation:** README.md with screenshots and usage guide
+
