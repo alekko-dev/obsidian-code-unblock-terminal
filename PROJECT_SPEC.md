@@ -188,9 +188,9 @@ npm run dev
 **Button behavior:**
 - Appears on mouse hover over code block
 - Click executes entire code block in terminal
-- Multi-line blocks execute line by line
+- Multi-line blocks execute as a single command by default (line-by-line execution is optional via Code Block Settings)
 - Respects shell syntax (e.g., line continuations)
-- **Works in both viewing mode AND editing mode**
+  - **Works in both viewing mode AND editing mode**
   - In viewing mode: Button overlays on rendered code block
   - In editing mode: Button appears in editor gutter or inline
   - Same functionality in both modes
@@ -341,6 +341,7 @@ Commands available (prefixed with "Code Unblock Terminal:"):
 ```
 
 #### 5.5 Code Block Settings
+Default behavior executes multi-line code blocks as a single command, with an optional toggle to run each line separately when desired.
 ```
 ┌─ Code Block Execution ───────────────────┐
 │ ☑ Show run buttons on code blocks        │
