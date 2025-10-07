@@ -21,6 +21,7 @@ export class TerminalView extends ItemView {
 	private shellManager: ShellManager | null = null;
 	private terminalContainer: HTMLElement | null = null;
 	private resizeObserver: ResizeObserver | null = null;
+	private windowResizeHandler: (() => void) | null = null;
 	private pendingResizeFrame: number | null = null;
 	private switchInProgress = false;
 
@@ -148,10 +149,7 @@ export class TerminalView extends ItemView {
 		];
 
 		// Handle resize events - setup before starting shell
-		this.resizeObserver = new ResizeObserver(() => {
-			this.handleResize();
-		});
-		this.resizeObserver.observe(this.terminalContainer);
+		this.setupResizeHandling();
 
 		// Start the default shell
 		const defaultProfile = availableShells.find(
@@ -224,6 +222,12 @@ export class TerminalView extends ItemView {
 		if (this.resizeObserver) {
 			this.resizeObserver.disconnect();
 			this.resizeObserver = null;
+		}
+
+		// Clean up fallback window resize handler
+		if (this.windowResizeHandler) {
+			window.removeEventListener('resize', this.windowResizeHandler);
+			this.windowResizeHandler = null;
 		}
 
 		// Remove DOM event listeners
@@ -316,6 +320,39 @@ export class TerminalView extends ItemView {
 		} finally {
 			this.switchInProgress = false;
 		}
+	}
+
+	/**
+	 * Setup resize handling with ResizeObserver or fallback to window resize
+	 */
+	private setupResizeHandling(): void {
+		if (!this.terminalContainer) {
+			return;
+		}
+
+		// Try to use ResizeObserver (modern browsers)
+		if (typeof ResizeObserver !== 'undefined') {
+			try {
+				this.resizeObserver = new ResizeObserver(() => {
+					this.handleResize();
+				});
+				this.resizeObserver.observe(this.terminalContainer);
+			} catch (error) {
+				console.warn('Failed to observe terminal container resize:', error);
+				this.setupFallbackResize();
+			}
+		} else {
+			console.warn('ResizeObserver not supported, using fallback resize handling');
+			this.setupFallbackResize();
+		}
+	}
+
+	/**
+	 * Fallback resize handling using window resize events
+	 */
+	private setupFallbackResize(): void {
+		this.windowResizeHandler = () => this.handleResize();
+		window.addEventListener('resize', this.windowResizeHandler);
 	}
 
 	/**

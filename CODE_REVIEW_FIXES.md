@@ -15,7 +15,7 @@
 **Build Status:** ✅ Successful (406KB main.js)
 **TypeScript:** ✅ No errors
 
-### Fixed Issues
+### Fixed Issues (Round 1)
 - ✅ Issue #1: Memory leak in event listeners (CRITICAL)
 - ✅ Issue #2: Race condition in shell switching (CRITICAL)
 - ✅ Issue #3: Missing resource cleanup on error (CRITICAL)
@@ -24,6 +24,12 @@
 - ✅ Issue #6: Unsafe type casting (HIGH)
 - ✅ Issue #8: node-pty error handling (HIGH)
 - ✅ Issue #11: Resize RAF debouncing (MEDIUM)
+
+### Fixed Issues (Round 2 - Medium Priority)
+- ✅ Issue #7: Settings type safety (HIGH)
+- ✅ Issue #9: ResizeObserver fallback (MEDIUM)
+- ✅ Issue #10: Hard-coded timeout values (MEDIUM)
+- ✅ Issue #12: CSS import compatibility (MEDIUM)
 
 **Next Steps:** Manual testing in Obsidian
 
@@ -673,15 +679,15 @@ tests/
 ## Progress Tracking
 
 **Critical Issues Fixed:** 5/5 ✅
-**High Priority Fixed:** 2/3 ✅
-**Medium Priority Fixed:** 1/4 🟡
+**High Priority Fixed:** 3/3 ✅✅
+**Medium Priority Fixed:** 4/4 ✅✅
 **Low Priority Fixed:** 0/2 ⚪
 
 **Total Estimated Effort:** ~20 hours
-**Actual Time Spent:** ~2 hours ⚡
+**Actual Time Spent:** ~3 hours ⚡⚡
 
 **Status:** 🟢 Ready for testing
-**Milestone Achieved:** ✅ All critical issues fixed!
+**Milestone Achieved:** ✅ All critical and medium priority issues fixed!
 **Next Milestone:** Manual testing in Obsidian → 🟢 Ready for merge
 
 ---

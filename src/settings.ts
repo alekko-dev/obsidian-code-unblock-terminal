@@ -72,9 +72,15 @@ export class CodeUnblockTerminalSettingTab extends PluginSettingTab {
 				.addOption('left', 'Left sidebar')
 				.addOption('right', 'Right sidebar')
 				.setValue(this.plugin.settings.panelPosition)
-				.onChange(async (value: PanelPosition) => {
-					this.plugin.settings.panelPosition = value;
-					await this.plugin.saveSettings();
+				.onChange(async (value) => {
+					// Validate value before saving
+					const validPositions: PanelPosition[] = ['bottom', 'left', 'right'];
+					if (validPositions.includes(value as PanelPosition)) {
+						this.plugin.settings.panelPosition = value as PanelPosition;
+						await this.plugin.saveSettings();
+					} else {
+						console.warn('Invalid panel position:', value);
+					}
 				}));
 
 		new Setting(containerEl)
@@ -171,9 +177,16 @@ export class CodeUnblockTerminalSettingTab extends PluginSettingTab {
 				.addOption('dark', 'Always dark')
 				.addOption('light', 'Always light')
 				.setValue(this.plugin.settings.theme)
-				.onChange(async (value: 'follow' | 'dark' | 'light') => {
-					this.plugin.settings.theme = value;
-					await this.plugin.saveSettings();
+				.onChange(async (value) => {
+					// Validate value before saving
+					const validThemes = ['follow', 'dark', 'light', 'custom'] as const;
+					type ValidTheme = typeof validThemes[number];
+					if (validThemes.includes(value as ValidTheme)) {
+						this.plugin.settings.theme = value as ValidTheme;
+						await this.plugin.saveSettings();
+					} else {
+						console.warn('Invalid theme value:', value);
+					}
 				}));
 
 		new Setting(containerEl)

@@ -61,10 +61,17 @@ export class XtermManager {
 		this.containerElement = container;
 		this.terminal.open(container);
 
-		// Fit to container size
-		setTimeout(() => {
-			this.fit();
-		}, 0);
+		// Allow DOM to render before fitting terminal to container
+		// Using double RAF ensures layout is complete before measuring
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				try {
+					this.fit();
+				} catch (error) {
+					console.error('Failed to fit terminal on initial render:', error);
+				}
+			});
+		});
 	}
 
 	/**
