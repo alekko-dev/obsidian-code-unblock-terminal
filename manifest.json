@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "minAppVersion": "1.4.11",
   "description": "Integrated terminal with seamless code block execution and variable substitution",
-  "author": "Your Name",
+  "author": "Aleksandr Kokin",
   "authorUrl": "https://github.com/yourusername/obsidian-code-unblock-terminal",
   "isDesktopOnly": true
 }
