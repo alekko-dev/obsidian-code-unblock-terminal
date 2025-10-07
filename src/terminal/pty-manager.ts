@@ -1,13 +1,26 @@
 import { EventEmitter } from 'events';
+import { Notice } from 'obsidian';
 
 // Try to import node-pty with error handling
 let pty: typeof import('node-pty') | null = null;
+let ptyLoadError: Error | null = null;
+
 try {
 	pty = require('node-pty');
 } catch (error) {
+	ptyLoadError = error as Error;
 	console.error('Failed to load node-pty module:', error);
 	console.error('This is likely due to a missing or incompatible native build.');
 	console.error('Please ensure node-pty is properly installed and compiled for your platform.');
+
+	// Show user notification with detailed error
+	const errorMsg = ptyLoadError?.message || 'Unknown error';
+	new Notice(
+		`Code Unblock Terminal: Failed to load terminal backend.\n` +
+		`Error: ${errorMsg}\n` +
+		`The plugin may not function correctly. Check the console for details.`,
+		10000
+	);
 }
 
 export interface PTYOptions {
@@ -43,13 +56,24 @@ export class PTYManager extends EventEmitter {
 
 	/**
 	 * Spawn a new shell process with PTY
+	 * Automatically kills existing process if one is already running
 	 */
 	spawn(options: PTYOptions): PTYProcess {
 		if (!pty) {
+			const errorMsg = ptyLoadError
+				? `node-pty failed to load: ${ptyLoadError.message}`
+				: 'node-pty module is not available';
+
 			throw new Error(
-				'node-pty module is not available. The terminal cannot function without it. ' +
-				'Please check the console for details about the import failure.'
+				`${errorMsg}. The terminal cannot function without it. ` +
+				'Please reinstall the plugin or check that your Node.js version is compatible.'
 			);
+		}
+
+		// Kill existing process if present to prevent orphaned processes
+		if (this.ptyProcess) {
+			console.warn('PTYManager: Killing existing process before spawning new one');
+			this.kill();
 		}
 
 		const { shell, args = [], cwd, env, cols = 80, rows = 30 } = options;

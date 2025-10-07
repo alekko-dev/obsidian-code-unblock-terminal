@@ -21,6 +21,21 @@ export class TerminalView extends ItemView {
 	private shellManager: ShellManager | null = null;
 	private terminalContainer: HTMLElement | null = null;
 	private resizeObserver: ResizeObserver | null = null;
+	private pendingResizeFrame: number | null = null;
+	private switchInProgress = false;
+
+	// Track DOM event listeners for cleanup
+	private buttonListeners: Array<{
+		element: HTMLElement;
+		type: string;
+		handler: EventListener;
+	}> = [];
+
+	// Track shell event listeners for cleanup
+	private shellEventListeners: Array<{
+		event: string;
+		handler: (...args: any[]) => void;
+	}> = [];
 
 	constructor(leaf: WorkspaceLeaf, plugin: CodeUnblockTerminalPlugin) {
 		super(leaf);
@@ -103,23 +118,34 @@ export class TerminalView extends ItemView {
 		// Initialize shell manager
 		this.shellManager = new ShellManager(this.xtermManager);
 
-		// Handle shell events
-		this.shellManager.on('start', (pid: number) => {
+		// Handle shell events - store handlers for cleanup
+		const startHandler = (pid: number) => {
 			console.log('Shell started with PID:', pid);
-		});
+		};
 
-		this.shellManager.on('exit', (code: number) => {
+		const exitHandler = (code: number) => {
 			console.log('Shell exited with code:', code);
 			if (this.plugin.settings.clearTerminalOnShellExit) {
 				this.xtermManager?.clear();
 			}
 			this.xtermManager?.writeln(`\r\nProcess exited with code ${code}`);
-		});
+		};
 
-		this.shellManager.on('error', (error: Error) => {
+		const errorHandler = (error: Error) => {
 			console.error('Shell error:', error);
 			new Notice(`Terminal error: ${error.message}`);
-		});
+		};
+
+		this.shellManager.on('start', startHandler);
+		this.shellManager.on('exit', exitHandler);
+		this.shellManager.on('error', errorHandler);
+
+		// Store for cleanup
+		this.shellEventListeners = [
+			{ event: 'start', handler: startHandler },
+			{ event: 'exit', handler: exitHandler },
+			{ event: 'error', handler: errorHandler },
+		];
 
 		// Handle resize events - setup before starting shell
 		this.resizeObserver = new ResizeObserver(() => {
@@ -132,30 +158,17 @@ export class TerminalView extends ItemView {
 			(p) => p.shell === this.plugin.settings.defaultShell
 		) || availableShells[0];
 
-		try {
-			this.shellManager.start(defaultProfile, this.getWorkingDirectory());
-		} catch (error) {
-			console.error('Failed to start shell:', error);
-			new Notice('Failed to start terminal. Check console for details.');
-			// Clean up on error
-			if (this.resizeObserver) {
-				this.resizeObserver.disconnect();
-				this.resizeObserver = null;
-			}
-			return;
-		}
-
-		// Button event handlers
-		newTerminalBtn.addEventListener('click', () => {
+		// Button event handlers - store for cleanup
+		const newTerminalHandler = () => {
 			// TODO: Implement tabbed terminals in future phase
 			new Notice('Multiple terminals will be available in a future update');
-		});
+		};
 
-		clearBtn.addEventListener('click', () => {
+		const clearHandler = () => {
 			this.xtermManager?.clear();
-		});
+		};
 
-		shellSelector.addEventListener('change', async (e) => {
+		const shellSelectorHandler = async (e: Event) => {
 			const selectedShell = (e.target as HTMLSelectElement).value;
 			const profile = availableShells.find((p) => p.shell === selectedShell);
 			if (profile && this.shellManager) {
@@ -166,18 +179,64 @@ export class TerminalView extends ItemView {
 					new Notice('Failed to switch shell. Check console for details.');
 				}
 			}
-		});
+		};
+
+		newTerminalBtn.addEventListener('click', newTerminalHandler);
+		clearBtn.addEventListener('click', clearHandler);
+		shellSelector.addEventListener('change', shellSelectorHandler);
+
+		// Store for cleanup
+		this.buttonListeners = [
+			{ element: newTerminalBtn, type: 'click', handler: newTerminalHandler },
+			{ element: clearBtn, type: 'click', handler: clearHandler },
+			{ element: shellSelector, type: 'change', handler: shellSelectorHandler },
+		];
+
+		try {
+			this.shellManager.start(defaultProfile, this.getWorkingDirectory());
+		} catch (error) {
+			console.error('Failed to start shell:', error);
+			new Notice('Failed to start terminal. Check console for details.');
+			// Clean up ALL resources on error
+			this.cleanupResources();
+			return;
+		}
 
 		// Focus terminal
 		this.xtermManager.focus();
 	}
 
 	async onClose(): Promise<void> {
+		this.cleanupResources();
+	}
+
+	/**
+	 * Clean up all resources (event listeners, observers, managers)
+	 */
+	private cleanupResources(): void {
+		// Cancel pending resize frame
+		if (this.pendingResizeFrame !== null) {
+			cancelAnimationFrame(this.pendingResizeFrame);
+			this.pendingResizeFrame = null;
+		}
+
 		// Clean up resize observer
 		if (this.resizeObserver) {
 			this.resizeObserver.disconnect();
 			this.resizeObserver = null;
 		}
+
+		// Remove DOM event listeners
+		this.buttonListeners.forEach(({ element, type, handler }) => {
+			element.removeEventListener(type, handler);
+		});
+		this.buttonListeners = [];
+
+		// Remove shell event listeners
+		this.shellEventListeners.forEach(({ event, handler }) => {
+			this.shellManager?.off(event, handler);
+		});
+		this.shellEventListeners = [];
 
 		// Stop shell
 		if (this.shellManager?.isRunning()) {
@@ -196,64 +255,87 @@ export class TerminalView extends ItemView {
 
 	/**
 	 * Switch to a different shell profile
+	 * Protected against race conditions and includes timeout
 	 */
 	private async switchShell(profile: ShellProfile): Promise<void> {
-		if (!this.shellManager) {
+		// Prevent concurrent shell switches
+		if (!this.shellManager || this.switchInProgress) {
 			return;
 		}
 
-		// Stop the current shell and wait for it to fully stop
-		return new Promise<void>((resolve, reject) => {
-			if (!this.shellManager) {
-				reject(new Error('Shell manager not initialized'));
-				return;
-			}
+		this.switchInProgress = true;
 
-			// Listen for exit event to ensure clean shutdown
-			const onExit = () => {
+		try {
+			return new Promise<void>((resolve, reject) => {
 				if (!this.shellManager) {
 					reject(new Error('Shell manager not initialized'));
 					return;
 				}
 
-				// Remove the exit listener
-				this.shellManager.off('exit', onExit);
+				// 5 second timeout for shell to exit
+				const timeoutId = setTimeout(() => {
+					if (this.shellManager) {
+						this.shellManager.off('exit', onExit);
+					}
+					reject(new Error('Shell switch timeout - shell did not exit cleanly'));
+				}, 5000);
 
-				// Start the new shell
-				try {
-					this.shellManager.start(profile, this.getWorkingDirectory());
-					resolve();
-				} catch (error) {
-					reject(error);
-				}
-			};
+				// Listen for exit event to ensure clean shutdown
+				const onExit = () => {
+					clearTimeout(timeoutId);
 
-			// If shell is running, wait for it to exit
-			if (this.shellManager.isRunning()) {
-				this.shellManager.once('exit', onExit);
-				this.shellManager.stop();
-			} else {
-				// Shell not running, start immediately
-				try {
-					this.shellManager.start(profile, this.getWorkingDirectory());
-					resolve();
-				} catch (error) {
-					reject(error);
+					if (!this.shellManager) {
+						reject(new Error('Shell manager not initialized'));
+						return;
+					}
+
+					// Start the new shell
+					try {
+						this.shellManager.start(profile, this.getWorkingDirectory());
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				};
+
+				// If shell is running, wait for it to exit
+				if (this.shellManager.isRunning()) {
+					this.shellManager.once('exit', onExit);
+					this.shellManager.stop();
+				} else {
+					// Shell not running, start immediately
+					clearTimeout(timeoutId);
+					try {
+						this.shellManager.start(profile, this.getWorkingDirectory());
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
 				}
-			}
-		});
+			});
+		} finally {
+			this.switchInProgress = false;
+		}
 	}
 
 	/**
-	 * Handle terminal resize
+	 * Handle terminal resize with proper debouncing
 	 */
 	private handleResize(): void {
-		if (this.xtermManager && this.terminalContainer) {
-			// Use RAF to debounce resize events
-			requestAnimationFrame(() => {
-				this.shellManager?.resize();
-			});
+		if (!this.xtermManager || !this.terminalContainer) {
+			return;
 		}
+
+		// Cancel pending resize if already scheduled
+		if (this.pendingResizeFrame !== null) {
+			cancelAnimationFrame(this.pendingResizeFrame);
+		}
+
+		// Schedule new resize
+		this.pendingResizeFrame = requestAnimationFrame(() => {
+			this.pendingResizeFrame = null;
+			this.shellManager?.resize();
+		});
 	}
 
 	/**
@@ -271,11 +353,28 @@ export class TerminalView extends ItemView {
 
 	/**
 	 * Get the working directory for the terminal
+	 * Falls back to home directory if vault path unavailable
 	 */
 	private getWorkingDirectory(): string {
-		// Use vault root as working directory
-		const vaultPath = (this.app.vault.adapter as any).basePath;
-		return vaultPath || process.cwd();
+		try {
+			// Type-safe access to vault path
+			const adapter = this.app.vault.adapter;
+			if ('basePath' in adapter && typeof adapter.basePath === 'string') {
+				// Validate path exists and is accessible
+				const fs = require('fs');
+				if (fs.existsSync(adapter.basePath)) {
+					const stats = fs.statSync(adapter.basePath);
+					if (stats.isDirectory()) {
+						return adapter.basePath;
+					}
+				}
+			}
+		} catch (error) {
+			console.warn('Could not determine vault path:', error);
+		}
+
+		// Fallback to user home directory
+		return require('os').homedir();
 	}
 
 	/**
