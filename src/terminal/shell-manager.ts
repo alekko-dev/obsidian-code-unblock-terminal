@@ -24,6 +24,8 @@ export class ShellManager extends EventEmitter {
 	private xtermManager: XtermManager;
 	private ptyProcess: PTYProcess | null = null;
 	private currentProfile: ShellProfile | null = null;
+	private xtermDataDisposable: (() => void) | null = null;
+	private xtermResizeDisposable: (() => void) | null = null;
 
 	constructor(xtermManager: XtermManager) {
 		super();
@@ -65,17 +67,19 @@ export class ShellManager extends EventEmitter {
 			this.ptyProcess.onExit((code, signal) => {
 				this.emit('exit', code, signal);
 				this.ptyProcess = null;
+				// Clean up xterm listeners when PTY exits
+				this.disposeXtermListeners();
 			});
 
-			// Wire xterm user input to PTY
-			this.xtermManager.onData((data) => {
+			// Wire xterm user input to PTY - store disposable
+			this.xtermDataDisposable = this.xtermManager.onData((data) => {
 				if (this.ptyProcess) {
 					this.ptyProcess.write(data);
 				}
 			});
 
-			// Wire xterm resize to PTY
-			this.xtermManager.onResize(({ cols, rows }) => {
+			// Wire xterm resize to PTY - store disposable
+			this.xtermResizeDisposable = this.xtermManager.onResize(({ cols, rows }) => {
 				if (this.ptyProcess) {
 					this.ptyProcess.resize(cols, rows);
 				}
@@ -93,9 +97,27 @@ export class ShellManager extends EventEmitter {
 	 * Stop the current shell session
 	 */
 	stop(signal?: string): void {
+		// Dispose xterm listeners first
+		this.disposeXtermListeners();
+
+		// Kill the PTY process
 		if (this.ptyProcess) {
 			this.ptyProcess.kill(signal);
 			this.ptyProcess = null;
+		}
+	}
+
+	/**
+	 * Dispose of xterm event listeners
+	 */
+	private disposeXtermListeners(): void {
+		if (this.xtermDataDisposable) {
+			this.xtermDataDisposable();
+			this.xtermDataDisposable = null;
+		}
+		if (this.xtermResizeDisposable) {
+			this.xtermResizeDisposable();
+			this.xtermResizeDisposable = null;
 		}
 	}
 

@@ -111,16 +111,20 @@ export class XtermManager {
 
 	/**
 	 * Listen for user input (key presses)
+	 * Returns a disposable function to remove the listener
 	 */
-	onData(callback: (data: string) => void): void {
-		this.terminal.onData(callback);
+	onData(callback: (data: string) => void): () => void {
+		const disposable = this.terminal.onData(callback);
+		return () => disposable.dispose();
 	}
 
 	/**
 	 * Listen for terminal resize events
+	 * Returns a disposable function to remove the listener
 	 */
-	onResize(callback: (dimensions: { cols: number; rows: number }) => void): void {
-		this.terminal.onResize(callback);
+	onResize(callback: (dimensions: { cols: number; rows: number }) => void): () => void {
+		const disposable = this.terminal.onResize(callback);
+		return () => disposable.dispose();
 	}
 
 	/**

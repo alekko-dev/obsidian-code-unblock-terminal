@@ -1,5 +1,14 @@
-import * as pty from 'node-pty';
 import { EventEmitter } from 'events';
+
+// Try to import node-pty with error handling
+let pty: typeof import('node-pty') | null = null;
+try {
+	pty = require('node-pty');
+} catch (error) {
+	console.error('Failed to load node-pty module:', error);
+	console.error('This is likely due to a missing or incompatible native build.');
+	console.error('Please ensure node-pty is properly installed and compiled for your platform.');
+}
 
 export interface PTYOptions {
 	shell: string;
@@ -30,12 +39,19 @@ export interface PTYProcess {
  * - Manage process lifecycle
  */
 export class PTYManager extends EventEmitter {
-	private ptyProcess: pty.IPty | null = null;
+	private ptyProcess: import('node-pty').IPty | null = null;
 
 	/**
 	 * Spawn a new shell process with PTY
 	 */
 	spawn(options: PTYOptions): PTYProcess {
+		if (!pty) {
+			throw new Error(
+				'node-pty module is not available. The terminal cannot function without it. ' +
+				'Please check the console for details about the import failure.'
+			);
+		}
+
 		const { shell, args = [], cwd, env, cols = 80, rows = 30 } = options;
 
 		// Merge environment variables

@@ -104,9 +104,19 @@ export default class CodeUnblockTerminalPlugin extends Plugin {
 				const mainLeaf = workspace.getLeaf('split', 'vertical');
 				leaf = mainLeaf;
 			} else if (position === 'left') {
-				leaf = workspace.getLeftLeaf(false) as WorkspaceLeaf;
+				// Create or get left leaf (pass true to create if not exists)
+				const leftLeaf = workspace.getLeftLeaf(true);
+				if (!leftLeaf) {
+					throw new Error('Failed to create left panel');
+				}
+				leaf = leftLeaf;
 			} else if (position === 'right') {
-				leaf = workspace.getRightLeaf(false) as WorkspaceLeaf;
+				// Create or get right leaf (pass true to create if not exists)
+				const rightLeaf = workspace.getRightLeaf(true);
+				if (!rightLeaf) {
+					throw new Error('Failed to create right panel');
+				}
+				leaf = rightLeaf;
 			} else {
 				// Default to bottom
 				const mainLeaf = workspace.getLeaf('split', 'vertical');

@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf, Notice } from 'obsidian';
 import { XtermManager } from './xterm-manager';
-import { ShellManager } from './shell-manager';
+import { ShellManager, ShellProfile } from './shell-manager';
 import CodeUnblockTerminalPlugin from '../main';
 
 export const TERMINAL_VIEW_TYPE = 'code-unblock-terminal-view';
@@ -121,6 +121,12 @@ export class TerminalView extends ItemView {
 			new Notice(`Terminal error: ${error.message}`);
 		});
 
+		// Handle resize events - setup before starting shell
+		this.resizeObserver = new ResizeObserver(() => {
+			this.handleResize();
+		});
+		this.resizeObserver.observe(this.terminalContainer);
+
 		// Start the default shell
 		const defaultProfile = availableShells.find(
 			(p) => p.shell === this.plugin.settings.defaultShell
@@ -131,6 +137,12 @@ export class TerminalView extends ItemView {
 		} catch (error) {
 			console.error('Failed to start shell:', error);
 			new Notice('Failed to start terminal. Check console for details.');
+			// Clean up on error
+			if (this.resizeObserver) {
+				this.resizeObserver.disconnect();
+				this.resizeObserver = null;
+			}
+			return;
 		}
 
 		// Button event handlers
@@ -143,25 +155,18 @@ export class TerminalView extends ItemView {
 			this.xtermManager?.clear();
 		});
 
-		shellSelector.addEventListener('change', (e) => {
+		shellSelector.addEventListener('change', async (e) => {
 			const selectedShell = (e.target as HTMLSelectElement).value;
 			const profile = availableShells.find((p) => p.shell === selectedShell);
 			if (profile && this.shellManager) {
 				try {
-					this.shellManager.stop();
-					this.shellManager.start(profile, this.getWorkingDirectory());
+					await this.switchShell(profile);
 				} catch (error) {
 					console.error('Failed to switch shell:', error);
 					new Notice('Failed to switch shell. Check console for details.');
 				}
 			}
 		});
-
-		// Handle resize events
-		this.resizeObserver = new ResizeObserver(() => {
-			this.handleResize();
-		});
-		this.resizeObserver.observe(this.terminalContainer);
 
 		// Focus terminal
 		this.xtermManager.focus();
@@ -187,6 +192,56 @@ export class TerminalView extends ItemView {
 		this.xtermManager?.dispose();
 		this.xtermManager = null;
 		this.shellManager = null;
+	}
+
+	/**
+	 * Switch to a different shell profile
+	 */
+	private async switchShell(profile: ShellProfile): Promise<void> {
+		if (!this.shellManager) {
+			return;
+		}
+
+		// Stop the current shell and wait for it to fully stop
+		return new Promise<void>((resolve, reject) => {
+			if (!this.shellManager) {
+				reject(new Error('Shell manager not initialized'));
+				return;
+			}
+
+			// Listen for exit event to ensure clean shutdown
+			const onExit = () => {
+				if (!this.shellManager) {
+					reject(new Error('Shell manager not initialized'));
+					return;
+				}
+
+				// Remove the exit listener
+				this.shellManager.off('exit', onExit);
+
+				// Start the new shell
+				try {
+					this.shellManager.start(profile, this.getWorkingDirectory());
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			};
+
+			// If shell is running, wait for it to exit
+			if (this.shellManager.isRunning()) {
+				this.shellManager.once('exit', onExit);
+				this.shellManager.stop();
+			} else {
+				// Shell not running, start immediately
+				try {
+					this.shellManager.start(profile, this.getWorkingDirectory());
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			}
+		});
 	}
 
 	/**
