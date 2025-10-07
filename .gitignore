@@ -137,3 +137,12 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Obsidian plugin build artifacts
+main.js
+*.js.map
+data.json
+
+# IDE
+.vscode/
+.idea/
