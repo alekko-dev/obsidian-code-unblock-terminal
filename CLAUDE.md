@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **obsidian-code-unblock-terminal** is an Obsidian plugin that integrates terminals with seamless code block execution. Users can run shell commands directly from markdown with automatic variable substitution, eliminating copy-paste friction between documentation and terminal.
 
-**Current Status**: Planning/specification phase. No implementation code exists yet - only documentation (README.md, PROJECT_SPEC.md).
+**Current Status**: Phase 1 (Core Terminal Panel) implemented. Basic terminal integration with PowerShell support is functional.
 
 **Target Platform**: Windows-first (PowerShell, WSL), with planned macOS/Linux support via platform abstraction layer.
 
@@ -18,29 +18,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Native Layer**: Windows-specific addon for console buffer resize and window management
 - **Clear Separation**: PTY layer owns process creation/lifecycle; native helpers handle platform-specific resize/window operations
 
-### Key Modules (Planned Structure)
+### Key Modules
 
+**Phase 1 (Implemented):**
+```
+src/
+├── main.ts                   # ✅ Plugin entry, commands, ribbon icon
+├── settings.ts               # ✅ Settings interface and tab UI
+└── terminal/
+    ├── terminal-view.ts      # ✅ Main panel view (Obsidian workspace integration)
+    ├── xterm-manager.ts      # ✅ xterm.js wrapper (UI rendering, themes)
+    ├── pty-manager.ts        # ✅ node-pty abstraction (process lifecycle)
+    └── shell-manager.ts      # ✅ Profile orchestration + PTY lifecycle hooks
+```
+
+**Future Phases (Planned):**
 ```
 src/
 ├── terminal/
-│   ├── terminal-view.ts      # Main panel view (Obsidian workspace integration)
-│   ├── xterm-manager.ts      # xterm.js wrapper (UI rendering)
-│   ├── pty-manager.ts        # node-pty abstraction (process lifecycle)
-│   ├── shell-manager.ts      # Profile orchestration + PTY lifecycle hooks
-│   ├── profile-manager.ts    # Shell profile configuration
-│   └── native-resize.ts      # Windows console buffer adjustment
+│   ├── profile-manager.ts    # Phase 2: Advanced shell profile configuration
+│   └── native-resize.ts      # Phase 4: Windows console buffer adjustment
 ├── codeblock/
-│   ├── detector.ts           # Parse markdown for executable code blocks
-│   ├── executor.ts           # Execute commands in terminal
-│   ├── variable-parser.ts    # Detect $VARS in scripts (PowerShell/Bash syntax)
-│   └── variable-manager.ts   # Variable substitution + persistence
+│   ├── detector.ts           # Phase 3: Parse markdown for executable code blocks
+│   ├── executor.ts           # Phase 3: Execute commands in terminal
+│   ├── variable-parser.ts    # Phase 3: Detect $VARS in scripts
+│   └── variable-manager.ts   # Phase 3: Variable substitution + persistence
 ├── context/
-│   ├── ribbon.ts             # Toggle terminal panel
-│   ├── commands.ts           # Command palette integration
-│   └── context-menu.ts       # Right-click file explorer integration
+│   └── context-menu.ts       # Phase 5: Right-click file explorer integration
 └── utils/
-    ├── wsl.ts                # WSL detection, path conversion (C:\ → /mnt/c)
-    └── windows-terminal.ts   # External Windows Terminal launch
+    ├── wsl.ts                # Phase 2: WSL detection, path conversion
+    └── windows-terminal.ts   # Phase 5: External Windows Terminal launch
 ```
 
 ### Data Flow
@@ -91,27 +98,42 @@ All platform code will be isolated in `src/platform/{windows,macos,linux}/`:
 
 ## Development Workflow
 
-### When Code Exists
-Since no implementation exists yet, the following commands are **planned** based on PROJECT_SPEC.md:
+### Build Commands
 
 ```bash
-# Build plugin (planned)
+# Install dependencies
 npm install
-npm run build
 
-# Development mode (planned)
+# Development mode (watch mode with hot reload)
 npm run dev
 
-# Lint/Test (planned)
-npm run lint
-npm test
+# Production build
+npm run build
 ```
 
-### Build Process (Planned)
-1. TypeScript compilation via esbuild
-2. Native addon compilation (node-gyp or cargo)
-3. Bundle into single main.js + native .node files
-4. Copy to Obsidian vault plugins folder for testing
+### Build Process
+1. Install dependencies: `npm install` (includes node-pty with pre-built binaries)
+2. Development: `npm run dev` - runs esbuild in watch mode with sourcemaps
+3. Production: `npm run build` - creates minified main.js for distribution
+4. Testing: Copy main.js, manifest.json, and styles.css to Obsidian vault plugins folder
+
+### Project Structure (Implemented)
+```
+src/
+├── main.ts                     # Plugin entry point, workspace integration
+├── settings.ts                 # Settings interface and tab UI
+└── terminal/
+    ├── terminal-view.ts        # Main terminal panel view (Obsidian ItemView)
+    ├── xterm-manager.ts        # xterm.js wrapper with theme/resize handling
+    ├── pty-manager.ts          # node-pty abstraction layer
+    └── shell-manager.ts        # Shell orchestration (PowerShell/WSL profiles)
+```
+
+### node-pty Integration
+- node-pty is marked as external in esbuild config (native module)
+- Pre-built binaries are included in node_modules after npm install
+- No custom native addon compilation required for Phase 1
+- Native Windows addon (resize helper) planned for Phase 4
 
 ## Key Features (MVP)
 

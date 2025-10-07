@@ -1,0 +1,125 @@
+/* Code Unblock Terminal Plugin Styles */
+
+/* Import xterm.js styles */
+@import '~@xterm/xterm/css/xterm.css';
+
+/* Terminal container */
+.code-unblock-terminal-container {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	width: 100%;
+	background-color: var(--background-primary);
+}
+
+/* Terminal wrapper */
+.terminal-wrapper {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	width: 100%;
+}
+
+/* Terminal controls */
+.terminal-controls {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px;
+	background-color: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+/* Shell selector */
+.terminal-shell-selector {
+	padding: 4px 8px;
+	background-color: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	color: var(--text-normal);
+	cursor: pointer;
+}
+
+.terminal-shell-selector:hover {
+	background-color: var(--background-primary-alt);
+}
+
+/* Terminal buttons */
+.terminal-new-btn,
+.terminal-clear-btn {
+	padding: 4px 12px;
+	background-color: var(--interactive-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	color: var(--text-normal);
+	cursor: pointer;
+	font-size: 12px;
+}
+
+.terminal-new-btn:hover,
+.terminal-clear-btn:hover {
+	background-color: var(--interactive-hover);
+}
+
+.terminal-new-btn:active,
+.terminal-clear-btn:active {
+	background-color: var(--interactive-active);
+}
+
+/* Terminal display area */
+.terminal-display {
+	flex: 1;
+	overflow: hidden;
+	background-color: #1e1e1e;
+	padding: 8px;
+}
+
+/* Ensure xterm fills the container */
+.terminal-display .xterm {
+	height: 100%;
+	width: 100%;
+}
+
+.terminal-display .xterm-viewport {
+	overflow-y: auto;
+}
+
+/* Light theme adjustments */
+.theme-light .terminal-display {
+	background-color: #ffffff;
+}
+
+/* Scrollbar styling for terminal */
+.terminal-display .xterm-viewport::-webkit-scrollbar {
+	width: 10px;
+}
+
+.terminal-display .xterm-viewport::-webkit-scrollbar-track {
+	background: var(--background-secondary);
+}
+
+.terminal-display .xterm-viewport::-webkit-scrollbar-thumb {
+	background: var(--background-modifier-border);
+	border-radius: 5px;
+}
+
+.terminal-display .xterm-viewport::-webkit-scrollbar-thumb:hover {
+	background: var(--text-faint);
+}
+
+/* Terminal view in sidebar */
+.workspace-leaf-content[data-type="code-unblock-terminal-view"] {
+	padding: 0;
+}
+
+/* Remove default view padding */
+.workspace-leaf-content[data-type="code-unblock-terminal-view"] .view-content {
+	padding: 0;
+	height: 100%;
+}
+
+/* Ensure terminal takes full height */
+.workspace-leaf-content[data-type="code-unblock-terminal-view"] .code-unblock-terminal-container {
+	height: 100%;
+}
