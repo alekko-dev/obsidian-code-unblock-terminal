@@ -21,6 +21,7 @@
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",
     "builtin-modules": "^3.3.0",
+    "electron": "^37.0.0",
     "esbuild": "^0.19.10",
     "obsidian": "^1.4.11",
     "tslib": "^2.6.2",
@@ -31,6 +32,6 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
-    "node-pty": "^1.0.0"
+    "node-pty": "^1.1.0-beta35"
   }
 }
