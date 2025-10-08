@@ -8,15 +8,14 @@ on:
     branches:
       - main
 
-permissions:
-  contents: write
-
 env:
   NODE_VERSION: '20'
 
 jobs:
   build:
     name: Build plugin
+    permissions:
+      contents: read
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -50,44 +49,37 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify build output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "main.js" ]; then
+            echo "✗ ERROR: Build output main.js was not generated" >&2
+            exit 1
+          fi
+
+          if [ ! -s "main.js" ]; then
+            echo "✗ ERROR: Build output main.js is empty" >&2
+            exit 1
+          fi
+
+          echo "✓ main.js exists and is non-empty"
+
       - name: Verify node-pty binary exists
         shell: bash
         run: |
           echo "Searching for node-pty binaries (Electron 37 build)..."
-          BINARY_FOUND=false
+          BINARY_PATH="node_modules/node-pty/build/Release/pty.node"
 
-          # Check build/Release directory
-          if [ -d "node_modules/node-pty/build/Release" ]; then
-            echo "✓ Found binaries in build/Release/"
-            ls -la node_modules/node-pty/build/Release/
-            BINARY_FOUND=true
-
-            # Show file details for debugging
-            echo ""
-            echo "Binary details:"
-            file node_modules/node-pty/build/Release/*.node 2>/dev/null || true
-          fi
-
-          # Check prebuilds directory
-          if [ -d "node_modules/node-pty/prebuilds" ]; then
-            echo "✓ Found prebuilt binaries in prebuilds/"
-            find node_modules/node-pty/prebuilds -type f
-            BINARY_FOUND=true
-          fi
-
-          # Look for .node files anywhere in node-pty
-          NODE_FILES=$(find node_modules/node-pty -name "*.node" 2>/dev/null || true)
-          if [ -n "$NODE_FILES" ]; then
-            echo "✓ Found .node files:"
-            echo "$NODE_FILES"
-            BINARY_FOUND=true
-          fi
-
-          if [ "$BINARY_FOUND" = false ]; then
-            echo "✗ ERROR: No node-pty binaries found!"
-            echo "This indicates electron-rebuild failed. The plugin will not work."
+          if [ ! -f "$BINARY_PATH" ]; then
+            echo "✗ ERROR: Expected node-pty binary $BINARY_PATH was not found" >&2
+            echo "This indicates electron-rebuild failed. The plugin will not work." >&2
             exit 1
           fi
+
+          echo "✓ Found node-pty binary at $BINARY_PATH"
+          ls -l "$BINARY_PATH"
 
           echo ""
           echo "✅ Binary verification passed for Electron 37 build"
@@ -96,7 +88,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.os }}
-          retention-days: 7
+          retention-days: 30
           path: |
             main.js
             manifest.json
@@ -109,6 +101,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     concurrency:
       group: release-${{ github.ref }}
       cancel-in-progress: false
@@ -183,6 +177,27 @@ jobs:
           echo "  Plugin ID: $ID"
           echo "  Version: $VERSION"
 
+      - name: Ensure release version is unique
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.manifest.outputs.plugin_version }}"
+
+          git fetch --quiet --tags
+
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "✗ ERROR: Tag v$VERSION already exists. Bump the version before releasing." >&2
+            exit 1
+          fi
+
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "✗ ERROR: Release v$VERSION already exists. Bump the version before releasing." >&2
+            exit 1
+          fi
+
+          echo "✓ Version v$VERSION is available for release"
+
       - name: Package plugin with platform-specific binaries
         id: package
         run: |
@@ -192,7 +207,15 @@ jobs:
 
           # Create packages for each platform
           for OS in windows-latest ubuntu-latest macos-latest; do
-            PLATFORM_NAME=$(echo "$OS" | cut -d'-' -f1)
+            case "$OS" in
+              windows-latest) PLATFORM_NAME="windows" ;;
+              ubuntu-latest) PLATFORM_NAME="linux" ;;
+              macos-latest) PLATFORM_NAME="macos" ;;
+              *)
+                echo "✗ ERROR: Unknown platform $OS" >&2
+                exit 1
+                ;;
+            esac
             RELEASE_DIR="release/$PLUGIN_ID-$PLATFORM_NAME"
             mkdir -p "$RELEASE_DIR"
 
@@ -271,7 +294,7 @@ jobs:
 
             This release includes separate packages for each platform:
             - **Windows**: `${{ steps.manifest.outputs.plugin_id }}-windows-v${{ steps.manifest.outputs.plugin_version }}.zip`
-            - **Linux**: `${{ steps.manifest.outputs.plugin_id }}-ubuntu-v${{ steps.manifest.outputs.plugin_version }}.zip`
+            - **Linux**: `${{ steps.manifest.outputs.plugin_id }}-linux-v${{ steps.manifest.outputs.plugin_version }}.zip`
             - **macOS**: `${{ steps.manifest.outputs.plugin_id }}-macos-v${{ steps.manifest.outputs.plugin_version }}.zip`
 
             ## Installation Instructions
