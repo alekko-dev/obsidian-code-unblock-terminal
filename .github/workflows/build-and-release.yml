@@ -120,11 +120,70 @@ jobs:
             node_modules/node-pty/build/
             node_modules/node-pty/prebuilds/
 
+  check-code-changes:
+    name: Check for code changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      code_changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if plugin code changed
+        id: check
+        run: |
+          set -euo pipefail
+
+          # Get the list of changed files in the last commit
+          CHANGED_FILES=$(git diff --name-only HEAD^..HEAD || echo "")
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          echo ""
+
+          # Define patterns for plugin code (not docs/workflows)
+          PLUGIN_CODE_PATTERNS=(
+            '^src/'
+            '^manifest\.json$'
+            '^package\.json$'
+            '^package-lock\.json$'
+            '^tsconfig\.json$'
+            '^esbuild\.config\.mjs$'
+            '^styles\.css$'
+            '^versions\.json$'
+          )
+
+          # Check if any changed file matches plugin code patterns
+          CODE_CHANGED=false
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            for pattern in "${PLUGIN_CODE_PATTERNS[@]}"; do
+              if echo "$file" | grep -qE "$pattern"; then
+                echo "✓ Plugin code changed: $file (matches $pattern)"
+                CODE_CHANGED=true
+                break
+              fi
+            done
+          done <<< "$CHANGED_FILES"
+
+          if [ "$CODE_CHANGED" = true ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "✓ Plugin code was modified - release will proceed"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "⏭️  Only docs/workflows changed - release will be skipped"
+          fi
+
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [build-plugin, build-binaries]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-plugin, build-binaries, check-code-changes]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-code-changes.outputs.code_changed == 'true'
     permissions:
       contents: write
     concurrency:
