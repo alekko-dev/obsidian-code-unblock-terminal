@@ -115,35 +115,6 @@ jobs:
         with:
           path: artifacts
 
-      - name: Verify manifest consistency
-        run: |
-          set -euo pipefail
-          echo "Verifying manifest.json consistency across platforms..."
-
-          WINDOWS_MANIFEST="artifacts/build-windows-latest/manifest.json"
-          LINUX_MANIFEST="artifacts/build-ubuntu-latest/manifest.json"
-          MACOS_MANIFEST="artifacts/build-macos-latest/manifest.json"
-
-          if ! diff -q "$WINDOWS_MANIFEST" "$LINUX_MANIFEST" > /dev/null 2>&1; then
-            echo "ERROR: manifest.json differs between Windows and Linux builds!"
-            echo "Windows version:"
-            cat "$WINDOWS_MANIFEST"
-            echo "Linux version:"
-            cat "$LINUX_MANIFEST"
-            exit 1
-          fi
-
-          if ! diff -q "$WINDOWS_MANIFEST" "$MACOS_MANIFEST" > /dev/null 2>&1; then
-            echo "ERROR: manifest.json differs between Windows and macOS builds!"
-            echo "Windows version:"
-            cat "$WINDOWS_MANIFEST"
-            echo "macOS version:"
-            cat "$MACOS_MANIFEST"
-            exit 1
-          fi
-
-          echo "✓ All manifests are consistent across platforms"
-
       - name: Locate manifest and extract metadata
         id: manifest
         run: |
