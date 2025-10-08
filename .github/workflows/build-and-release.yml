@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 env:
-  NODE_VERSION: '22'
+  NODE_VERSION: '20'
 
 jobs:
   build:
@@ -33,8 +33,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Setup Python (for node-gyp)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Install Electron for rebuild
+        run: npm install --save-dev electron@37.0.0
+
+      - name: Rebuild native modules for Electron
+        run: npx @electron/rebuild -f -w node-pty
 
       - name: Build
         run: npm run build
@@ -42,7 +53,7 @@ jobs:
       - name: Verify node-pty binary exists
         shell: bash
         run: |
-          echo "Searching for node-pty binaries..."
+          echo "Searching for node-pty binaries (Electron 37 build)..."
           BINARY_FOUND=false
 
           # Check build/Release directory
@@ -50,6 +61,11 @@ jobs:
             echo "✓ Found binaries in build/Release/"
             ls -la node_modules/node-pty/build/Release/
             BINARY_FOUND=true
+
+            # Show file details for debugging
+            echo ""
+            echo "Binary details:"
+            file node_modules/node-pty/build/Release/*.node 2>/dev/null || true
           fi
 
           # Check prebuilds directory
@@ -69,11 +85,12 @@ jobs:
 
           if [ "$BINARY_FOUND" = false ]; then
             echo "✗ ERROR: No node-pty binaries found!"
-            echo "This indicates a build failure. The plugin will not work."
+            echo "This indicates electron-rebuild failed. The plugin will not work."
             exit 1
           fi
 
-          echo "Binary verification passed."
+          echo ""
+          echo "✅ Binary verification passed for Electron 37 build"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
