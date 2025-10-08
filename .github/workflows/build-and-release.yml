@@ -17,7 +17,9 @@ env:
 jobs:
   build:
     name: Build plugin
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -32,13 +34,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+        run: npm ci
 
       - name: Build
         run: npm run build
@@ -46,29 +42,59 @@ jobs:
       - name: Verify node-pty binary exists
         shell: bash
         run: |
+          echo "Searching for node-pty binaries..."
+          BINARY_FOUND=false
+
+          # Check build/Release directory
           if [ -d "node_modules/node-pty/build/Release" ]; then
-            echo "✓ node-pty binary found in node_modules"
+            echo "✓ Found binaries in build/Release/"
             ls -la node_modules/node-pty/build/Release/
-          else
-            echo "✗ node-pty binary NOT found - this build may not work!"
+            BINARY_FOUND=true
+          fi
+
+          # Check prebuilds directory
+          if [ -d "node_modules/node-pty/prebuilds" ]; then
+            echo "✓ Found prebuilt binaries in prebuilds/"
+            find node_modules/node-pty/prebuilds -type f
+            BINARY_FOUND=true
+          fi
+
+          # Look for .node files anywhere in node-pty
+          NODE_FILES=$(find node_modules/node-pty -name "*.node" 2>/dev/null || true)
+          if [ -n "$NODE_FILES" ]; then
+            echo "✓ Found .node files:"
+            echo "$NODE_FILES"
+            BINARY_FOUND=true
+          fi
+
+          if [ "$BINARY_FOUND" = false ]; then
+            echo "✗ ERROR: No node-pty binaries found!"
+            echo "This indicates a build failure. The plugin will not work."
             exit 1
           fi
+
+          echo "Binary verification passed."
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.os }}
+          retention-days: 7
           path: |
             main.js
             manifest.json
             styles.css
-            node_modules/node-pty/build/Release/
+            node_modules/node-pty/build/
+            node_modules/node-pty/prebuilds/
 
   release:
     name: Release
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -77,6 +103,35 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Verify manifest consistency
+        run: |
+          set -euo pipefail
+          echo "Verifying manifest.json consistency across platforms..."
+
+          WINDOWS_MANIFEST="artifacts/build-windows-latest/manifest.json"
+          LINUX_MANIFEST="artifacts/build-ubuntu-latest/manifest.json"
+          MACOS_MANIFEST="artifacts/build-macos-latest/manifest.json"
+
+          if ! diff -q "$WINDOWS_MANIFEST" "$LINUX_MANIFEST" > /dev/null 2>&1; then
+            echo "ERROR: manifest.json differs between Windows and Linux builds!"
+            echo "Windows version:"
+            cat "$WINDOWS_MANIFEST"
+            echo "Linux version:"
+            cat "$LINUX_MANIFEST"
+            exit 1
+          fi
+
+          if ! diff -q "$WINDOWS_MANIFEST" "$MACOS_MANIFEST" > /dev/null 2>&1; then
+            echo "ERROR: manifest.json differs between Windows and macOS builds!"
+            echo "Windows version:"
+            cat "$WINDOWS_MANIFEST"
+            echo "macOS version:"
+            cat "$MACOS_MANIFEST"
+            exit 1
+          fi
+
+          echo "✓ All manifests are consistent across platforms"
 
       - name: Locate manifest and extract metadata
         id: manifest
@@ -106,6 +161,11 @@ jobs:
           echo "plugin_id=$ID" >> "$GITHUB_OUTPUT"
           echo "plugin_version=$VERSION" >> "$GITHUB_OUTPUT"
 
+          # Debug logging
+          echo "Extracted metadata:"
+          echo "  Plugin ID: $ID"
+          echo "  Version: $VERSION"
+
       - name: Package plugin with platform-specific binaries
         id: package
         run: |
@@ -116,33 +176,62 @@ jobs:
           # Create packages for each platform
           for OS in windows-latest ubuntu-latest macos-latest; do
             PLATFORM_NAME=$(echo "$OS" | cut -d'-' -f1)
-            mkdir -p "release/$PLUGIN_ID-$PLATFORM_NAME"
+            RELEASE_DIR="release/$PLUGIN_ID-$PLATFORM_NAME"
+            mkdir -p "$RELEASE_DIR"
+
+            echo "Packaging $PLATFORM_NAME build..."
 
             # Copy core plugin files from the platform build
-            cp "artifacts/build-$OS/main.js" "release/$PLUGIN_ID-$PLATFORM_NAME/"
-            cp "artifacts/build-$OS/manifest.json" "release/$PLUGIN_ID-$PLATFORM_NAME/"
+            cp "artifacts/build-$OS/main.js" "$RELEASE_DIR/"
+            cp "artifacts/build-$OS/manifest.json" "$RELEASE_DIR/"
 
             if [ -f "artifacts/build-$OS/styles.css" ]; then
-              cp "artifacts/build-$OS/styles.css" "release/$PLUGIN_ID-$PLATFORM_NAME/"
+              cp "artifacts/build-$OS/styles.css" "$RELEASE_DIR/"
             fi
 
-            # Copy platform-specific node-pty binaries
+            # Copy platform-specific node-pty binaries (REQUIRED)
+            BINARY_FOUND=false
+
+            # Check build/Release directory
             if [ -d "artifacts/build-$OS/node_modules/node-pty/build/Release" ]; then
-              mkdir -p "release/$PLUGIN_ID-$PLATFORM_NAME/node-pty-binaries"
-              cp -r "artifacts/build-$OS/node_modules/node-pty/build/Release/"* \
-                "release/$PLUGIN_ID-$PLATFORM_NAME/node-pty-binaries/"
+              mkdir -p "$RELEASE_DIR/node_modules/node-pty/build"
+              cp -r "artifacts/build-$OS/node_modules/node-pty/build/Release" \
+                "$RELEASE_DIR/node_modules/node-pty/build/"
+              echo "✓ Packaged binaries from build/Release for $PLATFORM_NAME"
+              BINARY_FOUND=true
+            fi
+
+            # Check prebuilds directory
+            if [ -d "artifacts/build-$OS/node_modules/node-pty/prebuilds" ]; then
+              mkdir -p "$RELEASE_DIR/node_modules/node-pty"
+              cp -r "artifacts/build-$OS/node_modules/node-pty/prebuilds" \
+                "$RELEASE_DIR/node_modules/node-pty/"
+              echo "✓ Packaged prebuilt binaries for $PLATFORM_NAME"
+              BINARY_FOUND=true
+            fi
+
+            if [ "$BINARY_FOUND" = false ]; then
+              echo "✗ ERROR: node-pty binaries not found for $OS"
+              echo "Cannot create functional package without native binaries"
+              exit 1
             fi
 
             # Copy optional files from repo root
             for OPTIONAL in versions.json README.md LICENSE; do
               if [ -f "$OPTIONAL" ]; then
-                cp "$OPTIONAL" "release/$PLUGIN_ID-$PLATFORM_NAME/"
+                cp "$OPTIONAL" "$RELEASE_DIR/"
               fi
             done
 
-            # Create platform-specific zip
+            # Normalize permissions before zipping
+            find "$RELEASE_DIR" -type f -exec chmod 644 {} \;
+            find "$RELEASE_DIR" -type d -exec chmod 755 {} \;
+
+            # Create platform-specific zip with flat structure for Obsidian
             ZIP_NAME="$PLUGIN_ID-$PLATFORM_NAME-v$VERSION.zip"
-            (cd release && zip -r "$ZIP_NAME" "$PLUGIN_ID-$PLATFORM_NAME")
+            (cd "$RELEASE_DIR" && zip -r "../$ZIP_NAME" .)
+
+            echo "✓ Created $ZIP_NAME"
           done
 
           echo "release_dir=release" >> "$GITHUB_OUTPUT"
@@ -168,7 +257,25 @@ jobs:
             - **Linux**: `${{ steps.manifest.outputs.plugin_id }}-ubuntu-v${{ steps.manifest.outputs.plugin_version }}.zip`
             - **macOS**: `${{ steps.manifest.outputs.plugin_id }}-macos-v${{ steps.manifest.outputs.plugin_version }}.zip`
 
-            Each package includes the compiled node-pty binaries for that platform.
-            Download the appropriate package for your operating system.
+            ## Installation Instructions
+
+            1. **Download** the appropriate package for your operating system
+            2. **Extract** the zip file
+            3. **Copy** the extracted contents to your Obsidian vault's `.obsidian/plugins/code-unblock-terminal/` directory
+            4. **Restart** Obsidian
+            5. **Enable** the plugin in Settings → Community plugins
+
+            ## Important Notes
+
+            - Each package includes platform-specific compiled binaries for node-pty
+            - **Do NOT mix packages** from different platforms - the binaries are not compatible
+            - If you encounter "module not found" errors, ensure you downloaded the correct platform package
+            - The plugin requires these binaries to provide terminal functionality
+
+            ## Requirements
+
+            - Obsidian v1.4.11 or higher
+            - Windows 10/11, macOS 10.15+, or modern Linux distribution
+            - PowerShell (Windows) or Bash (Linux/macOS)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
