@@ -3,21 +3,24 @@ name: Build and Release
 on:
   pull_request:
     branches:
-      - master
+      - main
   push:
     branches:
-      - master
+      - main
 
 permissions:
   contents: write
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
 
 jobs:
   build:
     name: Build plugin
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,6 +32,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        shell: bash
         run: |
           if [ -f package-lock.json ]; then
             npm ci
@@ -38,6 +42,27 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Verify node-pty binary exists
+        shell: bash
+        run: |
+          if [ -d "node_modules/node-pty/build/Release" ]; then
+            echo "✓ node-pty binary found in node_modules"
+            ls -la node_modules/node-pty/build/Release/
+          else
+            echo "✗ node-pty binary NOT found - this build may not work!"
+            exit 1
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os }}
+          path: |
+            main.js
+            manifest.json
+            styles.css
+            node_modules/node-pty/build/Release/
 
   release:
     name: Release
@@ -48,41 +73,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+          path: artifacts
 
-      - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-
-      - name: Build
-        run: npm run build
-
-      - name: Locate manifest
+      - name: Locate manifest and extract metadata
         id: manifest
         run: |
           set -euo pipefail
-          MANIFEST=""
-          for path in manifest.json dist/manifest.json build/manifest.json; do
-            if [ -f "$path" ]; then
-              MANIFEST="$path"
-              break
-            fi
-          done
 
-          if [ -z "$MANIFEST" ]; then
-            echo "Could not find manifest.json after build." >&2
+          # Use manifest from Windows build (primary platform)
+          MANIFEST="artifacts/build-windows-latest/manifest.json"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "Could not find manifest.json in Windows build artifact." >&2
             exit 1
           fi
 
-          DIR=$(dirname "$MANIFEST")
           ID=$(jq -r '.id // empty' "$MANIFEST")
           VERSION=$(jq -r '.version // empty' "$MANIFEST")
 
@@ -95,57 +103,72 @@ jobs:
             exit 1
           fi
 
-          echo "manifest_path=$MANIFEST" >> "$GITHUB_OUTPUT"
-          echo "manifest_dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "plugin_id=$ID" >> "$GITHUB_OUTPUT"
           echo "plugin_version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Package plugin
+      - name: Package plugin with platform-specific binaries
         id: package
         run: |
           set -euo pipefail
-          SOURCE="${{ steps.manifest.outputs.manifest_dir }}"
           PLUGIN_ID="${{ steps.manifest.outputs.plugin_id }}"
           VERSION="${{ steps.manifest.outputs.plugin_version }}"
 
-          mkdir -p release/"$PLUGIN_ID"
+          # Create packages for each platform
+          for OS in windows-latest ubuntu-latest macos-latest; do
+            PLATFORM_NAME=$(echo "$OS" | cut -d'-' -f1)
+            mkdir -p "release/$PLUGIN_ID-$PLATFORM_NAME"
 
-          cp "$SOURCE/manifest.json" release/"$PLUGIN_ID"/
+            # Copy core plugin files from the platform build
+            cp "artifacts/build-$OS/main.js" "release/$PLUGIN_ID-$PLATFORM_NAME/"
+            cp "artifacts/build-$OS/manifest.json" "release/$PLUGIN_ID-$PLATFORM_NAME/"
 
-          MAIN_SOURCE="$SOURCE/main.js"
-          if [ ! -f "$MAIN_SOURCE" ] && [ -f main.js ]; then
-            MAIN_SOURCE="main.js"
-          fi
-          if [ ! -f "$MAIN_SOURCE" ]; then
-            echo "Unable to find main.js in build output." >&2
-            exit 1
-          fi
-          cp "$MAIN_SOURCE" release/"$PLUGIN_ID"/
-
-          for OPTIONAL in styles.css versions.json README.md LICENSE; do
-            if [ -f "$SOURCE/$OPTIONAL" ]; then
-              cp "$SOURCE/$OPTIONAL" release/"$PLUGIN_ID"/
-            elif [ -f "$OPTIONAL" ]; then
-              cp "$OPTIONAL" release/"$PLUGIN_ID"/
+            if [ -f "artifacts/build-$OS/styles.css" ]; then
+              cp "artifacts/build-$OS/styles.css" "release/$PLUGIN_ID-$PLATFORM_NAME/"
             fi
+
+            # Copy platform-specific node-pty binaries
+            if [ -d "artifacts/build-$OS/node_modules/node-pty/build/Release" ]; then
+              mkdir -p "release/$PLUGIN_ID-$PLATFORM_NAME/node-pty-binaries"
+              cp -r "artifacts/build-$OS/node_modules/node-pty/build/Release/"* \
+                "release/$PLUGIN_ID-$PLATFORM_NAME/node-pty-binaries/"
+            fi
+
+            # Copy optional files from repo root
+            for OPTIONAL in versions.json README.md LICENSE; do
+              if [ -f "$OPTIONAL" ]; then
+                cp "$OPTIONAL" "release/$PLUGIN_ID-$PLATFORM_NAME/"
+              fi
+            done
+
+            # Create platform-specific zip
+            ZIP_NAME="$PLUGIN_ID-$PLATFORM_NAME-v$VERSION.zip"
+            (cd release && zip -r "$ZIP_NAME" "$PLUGIN_ID-$PLATFORM_NAME")
           done
 
-          ZIP_NAME="$PLUGIN_ID-v$VERSION.zip"
-          (cd release && zip -r "$ZIP_NAME" "$PLUGIN_ID")
-          echo "zip_path=release/$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_dir=release" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release artifact
+      - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.manifest.outputs.plugin_id }}-v${{ steps.manifest.outputs.plugin_version }}
-          path: ${{ steps.package.outputs.zip_path }}
+          name: ${{ steps.manifest.outputs.plugin_id }}-v${{ steps.manifest.outputs.plugin_version }}-all-platforms
+          path: ${{ steps.package.outputs.release_dir }}/*.zip
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.manifest.outputs.plugin_version }}
           name: ${{ steps.manifest.outputs.plugin_id }} v${{ steps.manifest.outputs.plugin_version }}
-          files: ${{ steps.package.outputs.zip_path }}
+          files: ${{ steps.package.outputs.release_dir }}/*.zip
           generate_release_notes: true
+          body: |
+            ## Platform-Specific Builds
+
+            This release includes separate packages for each platform:
+            - **Windows**: `${{ steps.manifest.outputs.plugin_id }}-windows-v${{ steps.manifest.outputs.plugin_version }}.zip`
+            - **Linux**: `${{ steps.manifest.outputs.plugin_id }}-ubuntu-v${{ steps.manifest.outputs.plugin_version }}.zip`
+            - **macOS**: `${{ steps.manifest.outputs.plugin_id }}-macos-v${{ steps.manifest.outputs.plugin_version }}.zip`
+
+            Each package includes the compiled node-pty binaries for that platform.
+            Download the appropriate package for your operating system.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
