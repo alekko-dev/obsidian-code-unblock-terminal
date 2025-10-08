@@ -3,19 +3,36 @@
 ## Prerequisites
 
 ### Required
-- **Node.js**: v18.x or v20.x (Node.js 22+ has issues with node-pty pre-built binaries)
+- **Node.js**: v20.x or v22.x (for running build tools)
 - **npm**: v9.0+ (comes with Node.js)
 
-### For Building node-pty from Source (Optional)
-If pre-built binaries are not available for your Node.js version, you'll need:
+### Important: Runtime vs Development Node.js Versions
+
+This plugin runs in **Obsidian's Electron 37 environment** which uses **Node.js 22**.
+The node-pty native module is compiled specifically for Electron 37 (not your local Node.js).
+
+- **Development**: Use Node.js 20 or 22 to run build tools (esbuild, TypeScript)
+- **Plugin Runtime**: Runs in Electron 37 with Node.js 22 (provided by Obsidian)
+- **node-pty Compilation**: Done via `@electron/rebuild` for Electron 37's ABI
+
+### For Building node-pty Locally (Optional)
+
+**Note**: Local node-pty compilation requires complete build tools and is optional.
+The CI pipeline handles native compilation automatically.
+
+If you want to compile node-pty locally for testing:
 - **Windows**:
-  - Python 3.6+ (not Python 2.x)
-  - Visual Studio Build Tools 2017 or later with "Desktop development with C++" workload
-  - Or install via: `npm install --global windows-build-tools` (requires admin)
+  - Python 3.11 (Python 3.12+ removed distutils needed by node-gyp)
+  - Visual Studio Build Tools 2017 or later with:
+    - "Desktop development with C++" workload
+    - MSVC Spectre-mitigated libraries (latest)
+    - Windows SDK
+- **macOS**: Xcode Command Line Tools
+- **Linux**: build-essential, python3
 
 ## Installation
 
-### Quick Start (Recommended)
+### Quick Start (Recommended for Development)
 
 ```bash
 # Install dependencies (skip native compilation)
@@ -25,19 +42,32 @@ npm install --ignore-scripts
 npm run build
 ```
 
-This approach installs dependencies without compiling native modules. The `node-pty` module will be marked as external in the build and needs to be available at runtime.
+This approach:
+- Installs all dependencies except native modules
+- Faster setup, no build tools required
+- Plugin builds successfully but won't run terminal features locally
+- CI pipeline compiles native modules for release
 
-### Full Installation (With Native Compilation)
+### Full Installation (For Local Testing)
 
-If you have Python and build tools installed:
+If you have complete build tools installed and want to test terminal features locally:
 
 ```bash
-# Install dependencies including native compilation
+# Install dependencies
 npm install
+
+# Install Electron for rebuild
+npm install --save-dev electron@37.0.0
+
+# Rebuild node-pty for Electron 37
+npx @electron/rebuild -f -w node-pty
 
 # Build the plugin
 npm run build
 ```
+
+**Note**: This requires complete Visual Studio build tools on Windows.
+Most developers should use the Quick Start and test in Obsidian directly.
 
 ## Development Workflow
 
@@ -56,15 +86,29 @@ npx tsc -noEmit
 
 ### Testing in Obsidian
 
-1. Build the plugin: `npm run build`
-2. Copy these files to your Obsidian vault's plugins folder:
+**Important**: The plugin requires platform-specific node-pty binaries to run.
+
+#### Option 1: Use CI-Built Release (Recommended)
+1. Download the appropriate package from GitHub releases
+2. Extract to `<vault>/.obsidian/plugins/code-unblock-terminal/`
+3. Enable in Settings → Community Plugins
+
+#### Option 2: Build and Test Locally
+1. Follow "Full Installation" steps above to compile node-pty
+2. Build the plugin: `npm run build`
+3. Copy to your Obsidian vault's plugins folder:
    ```
    <vault>/.obsidian/plugins/code-unblock-terminal/
    ├── main.js
    ├── manifest.json
-   └── styles.css
+   ├── styles.css
+   └── node_modules/node-pty/  (with compiled binaries)
    ```
-3. Reload Obsidian or enable the plugin in Settings → Community Plugins
+4. Reload Obsidian or enable the plugin in Settings → Community Plugins
+
+**Note**: If you only run `npm run build` without compiling node-pty,
+the plugin will load but terminal features won't work (you'll see a
+"Failed to load node-pty module" error).
 
 ### Development Tips
 
@@ -89,21 +133,36 @@ src/
 
 ### node-pty Build Errors
 
-**Problem**: `gyp ERR! find Python - Python is not set`
+**Problem**: `gyp ERR! find Python - Python is not set` or `ModuleNotFoundError: No module named 'distutils'`
 
 **Solution**:
-1. Use `npm install --ignore-scripts` to skip native compilation
-2. Or install Python 3.6+ and add to PATH
-3. Or use Node.js v18.x/v20.x which have pre-built binaries
+1. **Quick fix**: Use `npm install --ignore-scripts` to skip native compilation
+2. **For local testing**: Install Python 3.11 (not 3.12+) and add to PATH
+3. **Best approach**: Use CI-built releases which include pre-compiled binaries
+
+**Problem**: `error MSB8040: Spectre-mitigated libraries are required`
+
+**Solution**:
+- Install "MSVC v142+ Spectre-mitigated libs" from Visual Studio Installer
+- Or use the Quick Start installation (skip native compilation)
+- CI builds handle this automatically
+
+**Problem**: `Cannot open include file: 'GenVersion.h'`
+
+**Solution**:
+- This indicates incomplete Visual Studio installation
+- Easiest fix: Use `npm install --ignore-scripts` and test with CI-built releases
+- Alternative: Install complete Visual Studio Build Tools
 
 ### Module Not Found Errors
 
-**Problem**: `Cannot find module 'node-pty'`
+**Problem**: `Cannot find module 'node-pty'` or `Failed to load node-pty module`
 
 **Solution**:
-- Ensure `node-pty` is in your `node_modules/` folder
+- **In development**: This is expected if you used `--ignore-scripts`
+- **In Obsidian**: You need the CI-built release with platform-specific binaries
+- **For local testing**: Follow "Full Installation" steps to compile node-pty for Electron 37
 - Check that `node-pty` is listed as external in `esbuild.config.mjs`
-- The plugin requires `node-pty` binaries to be available at runtime
 
 ### Terminal Not Appearing
 
