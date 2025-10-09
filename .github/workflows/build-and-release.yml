@@ -7,7 +7,7 @@ on:
   push:
     branches:
       - main
-      - codex/implement-github-actions-pipeline-for-builds  # TEMP: for testing
+      - wf-opt  # TEMP: for testing before merge
 
 env:
   NODE_VERSION: '20'
@@ -151,7 +151,7 @@ jobs:
   check-code-changes:
     name: Check for code changes
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/wf-opt')  # TEMP: wf-opt for testing
     outputs:
       code_changed: ${{ steps.check.outputs.changed }}
     steps:
@@ -211,7 +211,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     needs: [build-plugin, build-binaries, check-code-changes]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-code-changes.outputs.code_changed == 'true'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/wf-opt') && needs.check-code-changes.outputs.code_changed == 'true'  # TEMP: wf-opt for testing
     permissions:
       contents: write
     concurrency:
