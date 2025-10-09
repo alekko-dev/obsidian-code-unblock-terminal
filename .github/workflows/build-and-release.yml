@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - codex/implement-github-actions-pipeline-for-builds  # TEMP: for testing
 
 env:
   NODE_VERSION: '20'
@@ -127,7 +128,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/implement-github-actions-pipeline-for-builds')
     permissions:
       contents: write
     concurrency:
