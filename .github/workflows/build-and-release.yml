@@ -151,7 +151,7 @@ jobs:
   check-code-changes:
     name: Check for code changes
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/wf-opt')  # TEMP: wf-opt for testing
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/wf-opt')) || github.event_name == 'pull_request'  # TEMP: wf-opt for testing
     outputs:
       code_changed: ${{ steps.check.outputs.changed }}
     steps:
@@ -207,16 +207,14 @@ jobs:
             echo "⏭️  Only docs/workflows changed - release will be skipped"
           fi
 
-  release:
-    name: Release
+  package-zips:
+    name: Package per-platform zips
     runs-on: ubuntu-latest
-    needs: [build-plugin, build-binaries, check-code-changes]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/wf-opt') && needs.check-code-changes.outputs.code_changed == 'true'  # TEMP: wf-opt for testing
-    permissions:
-      contents: write
-    concurrency:
-      group: release-${{ github.ref }}
-      cancel-in-progress: false
+    needs: [build-plugin, build-binaries]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -227,11 +225,149 @@ jobs:
           name: plugin-code
           path: artifacts/plugin
 
-      - name: Download binary artifacts
+      - name: Download binary artifacts for ${{ matrix.os }}
         uses: actions/download-artifact@v4
         with:
-          pattern: binaries-*
-          path: artifacts
+          name: binaries-${{ matrix.os }}
+          path: artifacts/binaries-${{ matrix.os }}
+
+      - name: Extract metadata from manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+
+          MANIFEST="manifest.json"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "Could not find manifest.json in repository." >&2
+            exit 1
+          fi
+
+          ID=$(jq -r '.id // empty' "$MANIFEST")
+          VERSION=$(jq -r '.version // empty' "$MANIFEST")
+
+          if [ -z "$ID" ] || [ "$ID" = "null" ]; then
+            ID=$(basename "$GITHUB_REPOSITORY")
+          fi
+
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "manifest.json must contain a semantic version." >&2
+            exit 1
+          fi
+
+          echo "plugin_id=$ID" >> "$GITHUB_OUTPUT"
+          echo "plugin_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Package ${{ matrix.os }} zip
+        run: |
+          set -euo pipefail
+
+          PLUGIN_ID="${{ steps.manifest.outputs.plugin_id }}"
+          VERSION="${{ steps.manifest.outputs.plugin_version }}"
+          OS="${{ matrix.os }}"
+
+          case "$OS" in
+            windows-latest) PLATFORM_NAME="windows" ;;
+            ubuntu-latest) PLATFORM_NAME="linux" ;;
+            macos-latest) PLATFORM_NAME="macos" ;;
+            *)
+              echo "✗ ERROR: Unknown platform $OS" >&2
+              exit 1
+              ;;
+          esac
+
+          RELEASE_DIR="release/$PLUGIN_ID-$PLATFORM_NAME"
+          mkdir -p "$RELEASE_DIR"
+
+          echo "Packaging $PLATFORM_NAME build..."
+
+          # Copy core plugin files (built once, platform-agnostic)
+          cp "artifacts/plugin/main.js" "$RELEASE_DIR/"
+          cp "artifacts/plugin/manifest.json" "$RELEASE_DIR/"
+          if [ -f "artifacts/plugin/styles.css" ]; then
+            cp "artifacts/plugin/styles.css" "$RELEASE_DIR/"
+          fi
+
+          BINARY_FOUND=false
+
+          # Copy node-pty package.json (required)
+          if [ -f "artifacts/binaries-$OS/node_modules/node-pty/package.json" ]; then
+            mkdir -p "$RELEASE_DIR/node_modules/node-pty"
+            cp "artifacts/binaries-$OS/node_modules/node-pty/package.json" \
+              "$RELEASE_DIR/node_modules/node-pty/"
+          else
+            echo "✗ ERROR: node-pty/package.json not found for $OS" >&2
+            exit 1
+          fi
+
+          # Copy lib directory if present
+          if [ -d "artifacts/binaries-$OS/node_modules/node-pty/lib" ]; then
+            mkdir -p "$RELEASE_DIR/node_modules/node-pty"
+            cp -r "artifacts/binaries-$OS/node_modules/node-pty/lib" \
+              "$RELEASE_DIR/node_modules/node-pty/"
+          fi
+
+          # Copy build/Release binaries if present
+          if [ -d "artifacts/binaries-$OS/node_modules/node-pty/build/Release" ]; then
+            mkdir -p "$RELEASE_DIR/node_modules/node-pty/build"
+            cp -r "artifacts/binaries-$OS/node_modules/node-pty/build/Release" \
+              "$RELEASE_DIR/node_modules/node-pty/build/"
+            BINARY_FOUND=true
+          fi
+
+          # Copy prebuilds if present
+          if [ -d "artifacts/binaries-$OS/node_modules/node-pty/prebuilds" ]; then
+            mkdir -p "$RELEASE_DIR/node_modules/node-pty"
+            cp -r "artifacts/binaries-$OS/node_modules/node-pty/prebuilds" \
+              "$RELEASE_DIR/node_modules/node-pty/"
+            BINARY_FOUND=true
+          fi
+
+          if [ "$BINARY_FOUND" = false ]; then
+            echo "✗ ERROR: node-pty binaries not found for $OS" >&2
+            exit 1
+          fi
+
+          # Optional files
+          for OPTIONAL in versions.json README.md LICENSE; do
+            if [ -f "$OPTIONAL" ]; then
+              cp "$OPTIONAL" "$RELEASE_DIR/"
+            fi
+          done
+
+          # Normalize permissions and zip
+          find "$RELEASE_DIR" -type f -exec chmod 644 {} \;
+          find "$RELEASE_DIR" -type d -exec chmod 755 {} \;
+
+          ZIP_NAME="$PLUGIN_ID-$PLATFORM_NAME-v$VERSION.zip"
+          (cd "$RELEASE_DIR" && zip -r "../$ZIP_NAME" .)
+
+      - name: Upload packaged zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.os }}
+          retention-days: 30
+          path: release/*.zip
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [package-zips, check-code-changes]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/wf-opt') && needs.check-code-changes.outputs.code_changed == 'true'  # TEMP: wf-opt for testing
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download packaged zips
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: artifacts/packages
 
       - name: Extract metadata from manifest
         id: manifest
@@ -287,112 +423,12 @@ jobs:
 
           echo "✓ Version v$VERSION is available for release"
 
-      - name: Package plugin with platform-specific binaries
-        id: package
-        run: |
-          set -euo pipefail
-          PLUGIN_ID="${{ steps.manifest.outputs.plugin_id }}"
-          VERSION="${{ steps.manifest.outputs.plugin_version }}"
-
-          # Create packages for each platform
-          for OS in windows-latest ubuntu-latest macos-latest; do
-            case "$OS" in
-              windows-latest) PLATFORM_NAME="windows" ;;
-              ubuntu-latest) PLATFORM_NAME="linux" ;;
-              macos-latest) PLATFORM_NAME="macos" ;;
-              *)
-                echo "✗ ERROR: Unknown platform $OS" >&2
-                exit 1
-                ;;
-            esac
-            RELEASE_DIR="release/$PLUGIN_ID-$PLATFORM_NAME"
-            mkdir -p "$RELEASE_DIR"
-
-            echo "Packaging $PLATFORM_NAME build..."
-
-            # Copy core plugin files (built once, platform-agnostic)
-            cp "artifacts/plugin/main.js" "$RELEASE_DIR/"
-            cp "artifacts/plugin/manifest.json" "$RELEASE_DIR/"
-
-            if [ -f "artifacts/plugin/styles.css" ]; then
-              cp "artifacts/plugin/styles.css" "$RELEASE_DIR/"
-            fi
-
-            # Copy platform-specific node-pty binaries and package structure (REQUIRED)
-            BINARY_FOUND=false
-
-            # Copy package.json (required for Node.js module resolution)
-            if [ -f "artifacts/binaries-$OS/node_modules/node-pty/package.json" ]; then
-              mkdir -p "$RELEASE_DIR/node_modules/node-pty"
-              cp "artifacts/binaries-$OS/node_modules/node-pty/package.json" \
-                "$RELEASE_DIR/node_modules/node-pty/"
-              echo "✓ Packaged node-pty package.json for $PLATFORM_NAME"
-            else
-              echo "✗ ERROR: node-pty/package.json not found for $OS"
-              echo "Cannot create functional package without package.json"
-              exit 1
-            fi
-
-            # Copy lib directory (JavaScript implementation and type definitions)
-            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/lib" ]; then
-              mkdir -p "$RELEASE_DIR/node_modules/node-pty"
-              cp -r "artifacts/binaries-$OS/node_modules/node-pty/lib" \
-                "$RELEASE_DIR/node_modules/node-pty/"
-              echo "✓ Packaged node-pty lib directory for $PLATFORM_NAME"
-            else
-              echo "⚠ WARNING: node-pty/lib directory not found for $OS"
-            fi
-
-            # Check build/Release directory
-            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/build/Release" ]; then
-              mkdir -p "$RELEASE_DIR/node_modules/node-pty/build"
-              cp -r "artifacts/binaries-$OS/node_modules/node-pty/build/Release" \
-                "$RELEASE_DIR/node_modules/node-pty/build/"
-              echo "✓ Packaged binaries from build/Release for $PLATFORM_NAME"
-              BINARY_FOUND=true
-            fi
-
-            # Check prebuilds directory
-            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/prebuilds" ]; then
-              mkdir -p "$RELEASE_DIR/node_modules/node-pty"
-              cp -r "artifacts/binaries-$OS/node_modules/node-pty/prebuilds" \
-                "$RELEASE_DIR/node_modules/node-pty/"
-              echo "✓ Packaged prebuilt binaries for $PLATFORM_NAME"
-              BINARY_FOUND=true
-            fi
-
-            if [ "$BINARY_FOUND" = false ]; then
-              echo "✗ ERROR: node-pty binaries not found for $OS"
-              echo "Cannot create functional package without native binaries"
-              exit 1
-            fi
-
-            # Copy optional files from repo checkout
-            for OPTIONAL in versions.json README.md LICENSE; do
-              if [ -f "$OPTIONAL" ]; then
-                cp "$OPTIONAL" "$RELEASE_DIR/"
-              fi
-            done
-
-            # Normalize permissions before zipping
-            find "$RELEASE_DIR" -type f -exec chmod 644 {} \;
-            find "$RELEASE_DIR" -type d -exec chmod 755 {} \;
-
-            # Create platform-specific zip with flat structure for Obsidian
-            ZIP_NAME="$PLUGIN_ID-$PLATFORM_NAME-v$VERSION.zip"
-            (cd "$RELEASE_DIR" && zip -r "../$ZIP_NAME" .)
-
-            echo "✓ Created $ZIP_NAME"
-          done
-
-          echo "release_dir=release" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.manifest.outputs.plugin_version }}
           name: ${{ steps.manifest.outputs.plugin_id }} v${{ steps.manifest.outputs.plugin_version }}
-          files: ${{ steps.package.outputs.release_dir }}/*.zip
+          files: artifacts/packages/**/*.zip
           generate_release_notes: true
           body: |
             ## Platform-Specific Builds
