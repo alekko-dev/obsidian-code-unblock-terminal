@@ -1,27 +1,7 @@
 import { EventEmitter } from 'events';
 import { Notice } from 'obsidian';
-
-// Try to import node-pty with error handling
-let pty: typeof import('node-pty') | null = null;
-let ptyLoadError: Error | null = null;
-
-try {
-	pty = require('node-pty');
-} catch (error) {
-	ptyLoadError = error as Error;
-	console.error('Failed to load node-pty module:', error);
-	console.error('This is likely due to a missing or incompatible native build.');
-	console.error('Please ensure node-pty is properly installed and compiled for your platform.');
-
-	// Show user notification with detailed error
-	const errorMsg = ptyLoadError?.message || 'Unknown error';
-	new Notice(
-		`Code Unblock Terminal: Failed to load terminal backend.\n` +
-		`Error: ${errorMsg}\n` +
-		`The plugin may not function correctly. Check the console for details.`,
-		10000
-	);
-}
+import * as path from 'path';
+import { ChildProcess, fork } from 'child_process';
 
 export interface PTYOptions {
 	shell: string;
@@ -42,127 +22,359 @@ export interface PTYProcess {
 }
 
 /**
+ * IPC Message types for PTY host communication
+ */
+interface IPCMessage {
+	type: string;
+	id?: number;
+	[key: string]: any;
+}
+
+/**
  * PTYManager provides a unified interface for spawning and managing shell processes
- * via node-pty (ConPTY on Windows, forkpty on Unix).
+ * via a separate PTY host process. This architecture bypasses Electron's renderer
+ * process security restrictions that prevent loading non-context-aware native modules.
+ *
+ * Architecture:
+ * Plugin (Renderer) <-> IPC <-> PTY Host (Node.js) <-> node-pty <-> Shell Process
  *
  * Responsibilities:
- * - Spawn shell processes with proper PTY bindings
+ * - Manage PTY host process lifecycle (start, stop, restart)
+ * - Spawn shell processes via IPC
  * - Stream data between PTY and consumers (xterm)
  * - Handle resize events
  * - Manage process lifecycle
+ * - Auto-restart on crash
  */
 export class PTYManager extends EventEmitter {
-	private ptyProcess: import('node-pty').IPty | null = null;
+	private hostProcess: ChildProcess | null = null;
+	private hostReady: boolean = false;
+	private hostInitPromise: Promise<void> | null = null;
+	private pluginDir: string | null = null;
+	private nextPtyId: number = 1;
+	private activePTYs: Map<number, {
+		dataCallbacks: Array<(data: string) => void>;
+		exitCallbacks: Array<(code: number, signal?: number) => void>;
+		pid?: number;
+	}> = new Map();
+	private restartAttempts: number = 0;
+	private readonly MAX_RESTART_ATTEMPTS = 3;
+	private readonly RESTART_DELAY = 1000; // 1 second
+
+	/**
+	 * Initialize the PTY manager with the plugin directory path
+	 * @param pluginDir - Absolute path to the plugin directory
+	 */
+	initialize(pluginDir: string): void {
+		this.pluginDir = pluginDir;
+		console.log('[PTYManager] Initialized with plugin directory:', pluginDir);
+	}
+
+	/**
+	 * Start the PTY host process
+	 * @returns Promise that resolves when host is ready
+	 */
+	private async startHost(): Promise<void> {
+		if (this.hostProcess && this.hostReady) {
+			return; // Already running
+		}
+
+		if (this.hostInitPromise) {
+			return this.hostInitPromise; // Already starting
+		}
+
+		if (!this.pluginDir) {
+			throw new Error('PTYManager not initialized. Call initialize() first.');
+		}
+
+		this.hostInitPromise = new Promise<void>((resolve, reject) => {
+			const ptyHostPath = path.join(this.pluginDir!, 'src', 'terminal', 'pty-host.js');
+
+			console.log('[PTYManager] Starting PTY host process:', ptyHostPath);
+
+			try {
+				// Fork the PTY host process with ELECTRON_RUN_AS_NODE to use Node.js runtime
+				this.hostProcess = fork(ptyHostPath, [], {
+					stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+					env: {
+						...process.env,
+						ELECTRON_RUN_AS_NODE: '1',
+					},
+				});
+
+				// Handle host ready message
+				const readyHandler = (message: IPCMessage) => {
+					if (message.type === 'ready') {
+						this.hostReady = true;
+						console.log('[PTYManager] PTY host ready');
+						resolve();
+					}
+				};
+
+				this.hostProcess.on('message', readyHandler);
+
+				// Setup message handlers
+				this.hostProcess.on('message', this.handleHostMessage.bind(this));
+
+				// Handle host exit
+				this.hostProcess.on('exit', (code, signal) => {
+					console.error('[PTYManager] PTY host exited', { code, signal });
+					this.hostReady = false;
+					this.hostProcess = null;
+					this.hostInitPromise = null;
+
+					// Emit event for all active PTYs
+					this.emit('host-exit', code, signal);
+
+					// Attempt restart if not intentional
+					if (code !== 0 && this.restartAttempts < this.MAX_RESTART_ATTEMPTS) {
+						this.attemptHostRestart();
+					} else if (this.restartAttempts >= this.MAX_RESTART_ATTEMPTS) {
+						new Notice(
+							`Code Unblock Terminal: PTY host crashed ${this.MAX_RESTART_ATTEMPTS} times. ` +
+							`Please restart Obsidian. Check the console for details.`,
+							10000
+						);
+					}
+				});
+
+				// Handle host errors
+				this.hostProcess.on('error', (error) => {
+					console.error('[PTYManager] PTY host error:', error);
+					this.emit('host-error', error);
+					reject(error);
+				});
+
+				// Log host stderr for debugging
+				this.hostProcess.stderr?.on('data', (data) => {
+					console.log('[PTY Host stderr]', data.toString());
+				});
+
+				// Timeout if host doesn't respond
+				setTimeout(() => {
+					if (!this.hostReady) {
+						reject(new Error('PTY host initialization timeout'));
+					}
+				}, 5000);
+
+			} catch (error) {
+				console.error('[PTYManager] Failed to start PTY host:', error);
+				reject(error);
+			}
+		});
+
+		return this.hostInitPromise;
+	}
+
+	/**
+	 * Attempt to restart the PTY host after a crash
+	 */
+	private async attemptHostRestart(): Promise<void> {
+		this.restartAttempts++;
+		console.log(`[PTYManager] Attempting to restart PTY host (attempt ${this.restartAttempts}/${this.MAX_RESTART_ATTEMPTS})`);
+
+		// Wait before restarting
+		await new Promise(resolve => setTimeout(resolve, this.RESTART_DELAY));
+
+		try {
+			await this.startHost();
+			this.restartAttempts = 0; // Reset counter on successful restart
+			console.log('[PTYManager] PTY host restarted successfully');
+
+			new Notice('Code Unblock Terminal: Reconnected successfully', 3000);
+		} catch (error) {
+			console.error('[PTYManager] Failed to restart PTY host:', error);
+		}
+	}
+
+	/**
+	 * Handle messages from PTY host process
+	 */
+	private handleHostMessage(message: IPCMessage): void {
+		if (!message || !message.type) {
+			console.error('[PTYManager] Received invalid message from host:', message);
+			return;
+		}
+
+		const { type, id } = message;
+
+		switch (type) {
+			case 'ready':
+				// Already handled in startHost()
+				break;
+
+			case 'spawned':
+				if (typeof id === 'number') {
+					const pty = this.activePTYs.get(id);
+					if (pty) {
+						pty.pid = message.pid;
+						this.emit('spawn', id, message.pid);
+					}
+				}
+				break;
+
+			case 'data':
+				if (typeof id === 'number') {
+					const pty = this.activePTYs.get(id);
+					if (pty) {
+						pty.dataCallbacks.forEach(callback => callback(message.data));
+					}
+				}
+				break;
+
+			case 'exit':
+				if (typeof id === 'number') {
+					const pty = this.activePTYs.get(id);
+					if (pty) {
+						pty.exitCallbacks.forEach(callback =>
+							callback(message.exitCode, message.signal)
+						);
+						this.activePTYs.delete(id);
+						this.emit('exit', id, message.exitCode, message.signal);
+					}
+				}
+				break;
+
+			case 'error':
+				console.error('[PTYManager] PTY host error:', message.error);
+				if (typeof id === 'number') {
+					this.emit('error', id, message.error);
+				}
+				break;
+
+			case 'resized':
+				if (typeof id === 'number') {
+					this.emit('resize', id, message.cols, message.rows);
+				}
+				break;
+
+			case 'killed':
+				if (typeof id === 'number') {
+					this.activePTYs.delete(id);
+				}
+				break;
+
+			default:
+				console.warn('[PTYManager] Unknown message type from host:', type);
+		}
+	}
+
+	/**
+	 * Send message to PTY host process
+	 */
+	private sendToHost(message: IPCMessage): void {
+		if (!this.hostProcess || !this.hostReady) {
+			throw new Error('PTY host not ready. Cannot send message.');
+		}
+
+		this.hostProcess.send(message);
+	}
 
 	/**
 	 * Spawn a new shell process with PTY
-	 * Automatically kills existing process if one is already running
+	 * Automatically starts host process if not running
 	 */
-	spawn(options: PTYOptions): PTYProcess {
-		if (!pty) {
-			const errorMsg = ptyLoadError
-				? `node-pty failed to load: ${ptyLoadError.message}`
-				: 'node-pty module is not available';
-
-			throw new Error(
-				`${errorMsg}. The terminal cannot function without it. ` +
-				'Please reinstall the plugin or check that your Node.js version is compatible.'
-			);
-		}
-
-		// Kill existing process if present to prevent orphaned processes
-		if (this.ptyProcess) {
-			console.warn('PTYManager: Killing existing process before spawning new one');
-			this.kill();
-		}
+	async spawn(options: PTYOptions): Promise<PTYProcess> {
+		// Ensure host is started
+		await this.startHost();
 
 		const { shell, args = [], cwd, env, cols = 80, rows = 30 } = options;
 
-		// Merge environment variables
-		const processEnv = { ...process.env, ...env };
+		// Generate unique PTY ID
+		const id = this.nextPtyId++;
 
-		// Spawn the PTY process
-		this.ptyProcess = pty.spawn(shell, args, {
-			name: 'xterm-256color',
-			cols,
-			rows,
-			cwd: cwd || process.cwd(),
-			env: processEnv,
-			// Use ConPTY on Windows for better compatibility
-			useConpty: process.platform === 'win32',
+		// Create PTY tracking structure
+		const ptyData = {
+			dataCallbacks: [] as Array<(data: string) => void>,
+			exitCallbacks: [] as Array<(code: number, signal?: number) => void>,
+			pid: undefined as number | undefined,
+		};
+
+		this.activePTYs.set(id, ptyData);
+
+		// Send spawn request to host
+		this.sendToHost({
+			type: 'spawn',
+			id,
+			shell,
+			args,
+			options: {
+				cwd: cwd || process.cwd(),
+				env: env ? { ...process.env, ...env } : process.env,
+				cols,
+				rows,
+			},
 		});
 
-		const ptyProcess = this.ptyProcess;
-		const pid = ptyProcess.pid;
-
-		// Create the PTYProcess interface
+		// Create PTYProcess interface
 		const processInterface: PTYProcess = {
-			pid,
+			get pid() {
+				return ptyData.pid || -1;
+			},
 
 			onData: (callback: (data: string) => void) => {
-				ptyProcess.onData((data) => {
-					callback(data);
-				});
+				ptyData.dataCallbacks.push(callback);
 			},
 
 			onExit: (callback: (code: number, signal?: number) => void) => {
-				ptyProcess.onExit(({ exitCode, signal }) => {
-					this.emit('exit', exitCode, signal);
-					callback(exitCode, signal);
-				});
+				ptyData.exitCallbacks.push(callback);
 			},
 
 			write: (data: string) => {
-				ptyProcess.write(data);
+				this.sendToHost({
+					type: 'write',
+					id,
+					data,
+				});
 			},
 
 			resize: (cols: number, rows: number) => {
-				try {
-					ptyProcess.resize(cols, rows);
-					this.emit('resize', cols, rows, pid);
-				} catch (error) {
-					console.error('Failed to resize PTY:', error);
-				}
+				this.sendToHost({
+					type: 'resize',
+					id,
+					cols,
+					rows,
+				});
 			},
 
 			kill: (signal?: string) => {
-				try {
-					ptyProcess.kill(signal);
-				} catch (error) {
-					console.error('Failed to kill PTY process:', error);
-				}
+				this.sendToHost({
+					type: 'kill',
+					id,
+					signal,
+				});
 			},
 		};
 
-		this.emit('spawn', pid);
 		return processInterface;
 	}
 
 	/**
-	 * Kill the current PTY process
+	 * Stop the PTY host process and all active PTYs
 	 */
-	kill(signal?: string): void {
-		if (this.ptyProcess) {
-			try {
-				this.ptyProcess.kill(signal);
-				this.ptyProcess = null;
-			} catch (error) {
-				console.error('Failed to kill PTY:', error);
-			}
+	async stopHost(): Promise<void> {
+		if (this.hostProcess) {
+			console.log('[PTYManager] Stopping PTY host process');
+
+			this.hostProcess.kill();
+			this.hostProcess = null;
+			this.hostReady = false;
+			this.hostInitPromise = null;
+			this.activePTYs.clear();
 		}
 	}
 
 	/**
-	 * Check if a PTY process is currently running
+	 * Check if PTY host is running
 	 */
-	isRunning(): boolean {
-		return this.ptyProcess !== null;
+	isHostRunning(): boolean {
+		return this.hostReady && this.hostProcess !== null;
 	}
 
 	/**
-	 * Get the current process ID
+	 * Get count of active PTY processes
 	 */
-	getPid(): number | null {
-		return this.ptyProcess?.pid ?? null;
+	getActivePTYCount(): number {
+		return this.activePTYs.size;
 	}
 }

@@ -32,7 +32,7 @@ const context = await esbuild.context({
 		'@lezer/highlight',
 		'@lezer/lr',
 		...builtins,
-		// Mark node-pty as external since it's a native module
+		// Mark node-pty as external since it's a native module loaded via PTY host
 		'node-pty',
 	],
 	format: 'cjs',

@@ -17,6 +17,7 @@ export const TERMINAL_VIEW_TYPE = 'code-unblock-terminal-view';
  */
 export class TerminalView extends ItemView {
 	private plugin: CodeUnblockTerminalPlugin;
+	private pluginDir: string | null;
 	private xtermManager: XtermManager | null = null;
 	private shellManager: ShellManager | null = null;
 	private terminalContainer: HTMLElement | null = null;
@@ -38,9 +39,10 @@ export class TerminalView extends ItemView {
 		handler: (...args: any[]) => void;
 	}> = [];
 
-	constructor(leaf: WorkspaceLeaf, plugin: CodeUnblockTerminalPlugin) {
+	constructor(leaf: WorkspaceLeaf, plugin: CodeUnblockTerminalPlugin, pluginDir: string | null = null) {
 		super(leaf);
 		this.plugin = plugin;
+		this.pluginDir = pluginDir;
 	}
 
 	getViewType(): string {
@@ -117,7 +119,7 @@ export class TerminalView extends ItemView {
 		this.xtermManager.open(this.terminalContainer);
 
 		// Initialize shell manager
-		this.shellManager = new ShellManager(this.xtermManager);
+		this.shellManager = new ShellManager(this.xtermManager, this.pluginDir);
 
 		// Handle shell events - store handlers for cleanup
 		const startHandler = (pid: number) => {
@@ -191,7 +193,7 @@ export class TerminalView extends ItemView {
 		];
 
 		try {
-			this.shellManager.start(defaultProfile, this.getWorkingDirectory());
+			await this.shellManager.start(defaultProfile, this.getWorkingDirectory());
 		} catch (error) {
 			console.error('Failed to start shell:', error);
 			new Notice('Failed to start terminal. Check console for details.');
@@ -294,12 +296,15 @@ export class TerminalView extends ItemView {
 					}
 
 					// Start the new shell
-					try {
-						this.shellManager.start(profile, this.getWorkingDirectory());
-						resolve();
-					} catch (error) {
-						reject(error);
-					}
+					const startShell = async () => {
+						try {
+							await this.shellManager!.start(profile, this.getWorkingDirectory());
+							resolve();
+						} catch (error) {
+							reject(error);
+						}
+					};
+					startShell();
 				};
 
 				// If shell is running, wait for it to exit
@@ -309,12 +314,15 @@ export class TerminalView extends ItemView {
 				} else {
 					// Shell not running, start immediately
 					clearTimeout(timeoutId);
-					try {
-						this.shellManager.start(profile, this.getWorkingDirectory());
-						resolve();
-					} catch (error) {
-						reject(error);
-					}
+					const startShell = async () => {
+						try {
+							await this.shellManager!.start(profile, this.getWorkingDirectory());
+							resolve();
+						} catch (error) {
+							reject(error);
+						}
+					};
+					startShell();
 				}
 			});
 		} finally {
