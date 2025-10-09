@@ -91,16 +91,8 @@ function initializePTY() {
 			pluginDir = path.resolve(scriptDir, '..', '..');  // Development
 		}
 
-		// Try official node-pty first (preferred for production)
-		let nodePtyPath = path.join(pluginDir, 'node_modules', 'node-pty');
-		let ptyPackage = 'node-pty';
-
-		// Check if node-pty binary exists, fallback to prebuilt version for development
-		const nodePtyBuildPath = path.join(nodePtyPath, 'build', 'Release', 'pty.node');
-		if (!fs.existsSync(nodePtyBuildPath)) {
-			nodePtyPath = path.join(pluginDir, 'node_modules', '@homebridge', 'node-pty-prebuilt-multiarch');
-			ptyPackage = '@homebridge/node-pty-prebuilt-multiarch';
-		}
+		// Load official node-pty package
+		const nodePtyPath = path.join(pluginDir, 'node_modules', 'node-pty');
 
 		// Verify the path exists before requiring
 		if (!fs.existsSync(nodePtyPath)) {
@@ -117,7 +109,7 @@ function initializePTY() {
 		process.nextTick(() => {
 			safeSend({
 				type: 'ready',
-				message: `PTY host initialized successfully (using ${ptyPackage})`
+				message: 'PTY host initialized successfully'
 			});
 		});
 	} catch (error) {
