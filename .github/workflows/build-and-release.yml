@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - codex/implement-github-actions-pipeline-for-builds  # TEMP: for testing
 
 env:
   NODE_VERSION: '20'
@@ -111,12 +112,39 @@ jobs:
           echo ""
           echo "✅ Binary verification passed for Electron 37 build"
 
+      - name: Ensure node-pty has proper package structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Ensuring node-pty has package.json for Node.js module resolution..."
+
+          # Check if package.json exists in node-pty
+          if [ ! -f "node_modules/node-pty/package.json" ]; then
+            echo "✗ ERROR: node-pty/package.json not found" >&2
+            exit 1
+          fi
+
+          echo "✓ node-pty package.json exists"
+
+          # Verify main entry point is set correctly
+          MAIN_ENTRY=$(node -e "console.log(require('./node_modules/node-pty/package.json').main || '')")
+          if [ -z "$MAIN_ENTRY" ]; then
+            echo "⚠ WARNING: node-pty package.json has no 'main' field"
+          else
+            echo "✓ node-pty main entry: $MAIN_ENTRY"
+          fi
+
+          echo "✓ node-pty package structure verified"
+
       - name: Upload binary artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.os }}
           retention-days: 30
           path: |
+            node_modules/node-pty/package.json
+            node_modules/node-pty/lib/
             node_modules/node-pty/build/
             node_modules/node-pty/prebuilds/
 
@@ -203,7 +231,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: binaries-*
-          path: artifacts/binaries
+          path: artifacts
 
       - name: Extract metadata from manifest
         id: manifest
@@ -290,22 +318,44 @@ jobs:
               cp "artifacts/plugin/styles.css" "$RELEASE_DIR/"
             fi
 
-            # Copy platform-specific node-pty binaries (REQUIRED)
+            # Copy platform-specific node-pty binaries and package structure (REQUIRED)
             BINARY_FOUND=false
 
+            # Copy package.json (required for Node.js module resolution)
+            if [ -f "artifacts/binaries-$OS/node_modules/node-pty/package.json" ]; then
+              mkdir -p "$RELEASE_DIR/node_modules/node-pty"
+              cp "artifacts/binaries-$OS/node_modules/node-pty/package.json" \
+                "$RELEASE_DIR/node_modules/node-pty/"
+              echo "✓ Packaged node-pty package.json for $PLATFORM_NAME"
+            else
+              echo "✗ ERROR: node-pty/package.json not found for $OS"
+              echo "Cannot create functional package without package.json"
+              exit 1
+            fi
+
+            # Copy lib directory (JavaScript implementation and type definitions)
+            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/lib" ]; then
+              mkdir -p "$RELEASE_DIR/node_modules/node-pty"
+              cp -r "artifacts/binaries-$OS/node_modules/node-pty/lib" \
+                "$RELEASE_DIR/node_modules/node-pty/"
+              echo "✓ Packaged node-pty lib directory for $PLATFORM_NAME"
+            else
+              echo "⚠ WARNING: node-pty/lib directory not found for $OS"
+            fi
+
             # Check build/Release directory
-            if [ -d "artifacts/binaries/binaries-$OS/node_modules/node-pty/build/Release" ]; then
+            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/build/Release" ]; then
               mkdir -p "$RELEASE_DIR/node_modules/node-pty/build"
-              cp -r "artifacts/binaries/binaries-$OS/node_modules/node-pty/build/Release" \
+              cp -r "artifacts/binaries-$OS/node_modules/node-pty/build/Release" \
                 "$RELEASE_DIR/node_modules/node-pty/build/"
               echo "✓ Packaged binaries from build/Release for $PLATFORM_NAME"
               BINARY_FOUND=true
             fi
 
             # Check prebuilds directory
-            if [ -d "artifacts/binaries/binaries-$OS/node_modules/node-pty/prebuilds" ]; then
+            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/prebuilds" ]; then
               mkdir -p "$RELEASE_DIR/node_modules/node-pty"
-              cp -r "artifacts/binaries/binaries-$OS/node_modules/node-pty/prebuilds" \
+              cp -r "artifacts/binaries-$OS/node_modules/node-pty/prebuilds" \
                 "$RELEASE_DIR/node_modules/node-pty/"
               echo "✓ Packaged prebuilt binaries for $PLATFORM_NAME"
               BINARY_FOUND=true

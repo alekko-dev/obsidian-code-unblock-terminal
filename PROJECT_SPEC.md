@@ -459,22 +459,32 @@ Exit code: 1
   - @xterm/addon-ligatures (font ligatures)
   - @xterm/addon-unicode11 (Unicode support)
 - **PTY layer:**
-  - Preferred: **node-pty** ^1.0.0 (ConPTY bindings on Windows, forkpty on Unix)
-  - Alternative: custom napi-based ConPTY bindings if node-pty cannot be bundled
+  - **node-pty** ^1.1.0-beta35 (ConPTY bindings on Windows, forkpty on Unix)
+  - Loaded via PTY host process to bypass Electron renderer restrictions
+  - Platform-specific prebuilt binaries bundled per release
 
 #### 8.2 PTY Management Layer
 **Purpose:** Provide a unified interface for spawning and managing shell processes via ConPTY/PTY APIs.
 
-- `pty-manager.ts` wraps `node-pty` (or custom bindings) and exposes a strongly typed API to the rest of the plugin.
-- `shell-manager.ts` orchestrates profile selection, environment injection, and delegates lifecycle events to the PTY manager.
-- Integrates with `xterm-manager.ts` by streaming PTY output to xterm.js and writing user input back to the PTY.
-- Emits resize notifications that are consumed by the native resize helper when Windows-specific buffer adjustments are required.
-- Responsible for reconnect logic and detecting abnormal PTY exits to drive user-facing error handling.
+**Architecture:** Due to Obsidian's Electron security restrictions (renderer process cannot load non-context-aware native addons), we use a separate PTY host process architecture:
+
+- `pty-host.js` - Standalone Node.js process that loads `node-pty` native addon
+- `pty-manager.ts` - IPC client that communicates with PTY host via child_process.fork()
+- `shell-manager.ts` orchestrates profile selection, environment injection, and delegates lifecycle events to the PTY manager
+- Integrates with `xterm-manager.ts` by streaming PTY output (via IPC) to xterm.js and writing user input back to the PTY
+- Emits resize notifications that are consumed by the native resize helper when Windows-specific buffer adjustments are required
+- Responsible for PTY host lifecycle, reconnect logic, and detecting abnormal PTY exits to drive user-facing error handling
+
+**Process Communication:**
+```
+Plugin (Renderer) ←→ IPC ←→ PTY Host (Node.js) ←→ node-pty ←→ Shell Process
+```
 
 **Cross-platform benefits:**
-- `node-pty` ships with native backends for Windows (ConPTY), macOS, and Linux (forkpty), giving us a consistent API surface.
-- Reduces the amount of platform-specific process code required for the planned macOS and Linux phases.
-- Simplifies future Phase 7/8 work by keeping PTY responsibilities centralized in one module regardless of platform.
+- `node-pty` ships with native backends for Windows (ConPTY), macOS, and Linux (forkpty), giving us a consistent API surface
+- Reduces the amount of platform-specific process code required for the planned macOS and Linux phases
+- Simplifies future Phase 7/8 work by keeping PTY responsibilities centralized in one module regardless of platform
+- No external dependencies required (Electron includes Node.js runtime)
 
 #### 8.3 Native Addons (Node.js)
 **Purpose:** Replace Python dependency for terminal resizing
@@ -499,11 +509,53 @@ interface TerminalNative {
 }
 ```
 
-#### 8.4 Build System
+#### 8.4 Build System & Distribution Strategy
+**Build Tools:**
 - **Bundler:** esbuild
 - **TypeScript:** Strict mode
-- **Native compilation:** node-gyp or cargo (for Rust)
-- **Pre-built binaries:** Ship compiled .node files for Windows x64/ARM
+- **Native compilation:** node-gyp (for optional resize helper)
+
+**Platform-Specific Distribution:**
+
+Due to node-pty's native binary requirements (~300KB per platform), we use platform-specific plugin releases to avoid bundling unnecessary binaries (30MB+ if all platforms included).
+
+**GitHub Actions CI/CD:**
+```yaml
+Build Matrix:
+- windows-x64   → Downloads Windows node-pty prebuilds
+- darwin-x64    → Downloads macOS Intel prebuilds
+- darwin-arm64  → Downloads macOS Apple Silicon prebuilds
+- linux-x64     → Downloads Linux x64 prebuilds
+```
+
+**Release Assets:**
+```
+code-unblock-terminal-1.0.0-win32-x64.zip    (~500KB)
+code-unblock-terminal-1.0.0-darwin-x64.zip   (~500KB)
+code-unblock-terminal-1.0.0-darwin-arm64.zip (~500KB)
+code-unblock-terminal-1.0.0-linux-x64.zip    (~500KB)
+```
+
+**Each release contains:**
+- `main.js` - Bundled plugin code
+- `manifest.json` - Plugin metadata
+- `styles.css` - Plugin styles
+- `pty-host.js` - PTY host process script
+- `node_modules/node-pty/` - Platform-specific node-pty with native binary
+
+**Build Process:**
+1. GitHub Actions runs on each platform (or cross-compiles)
+2. Downloads official node-pty prebuilt binaries for target platform
+3. Bundles only required platform-specific .node file
+4. Creates platform-specific release archive
+5. Users download appropriate version for their OS
+
+**Benefits:**
+- ✅ Small download size (~500KB vs 30MB)
+- ✅ No network dependency after install
+- ✅ Works offline
+- ✅ Simple for users
+- ✅ Official node-pty binaries (maintained by Microsoft)
 
 ### 9. File Structure
 
@@ -517,8 +569,9 @@ obsidian-code-unblock-terminal/
 │   │   ├── xterm-manager.ts    # xterm.js wrapper
 │   │   ├── shell-manager.ts    # Shell profile orchestration + PTY lifecycle hooks
 │   │   ├── profile-manager.ts  # Terminal profiles
-│   │   ├── pty-manager.ts      # node-pty / ConPTY abstraction
-│   │   └── native-resize.ts    # Windows-specific resize helper
+│   │   ├── pty-manager.ts      # IPC client for PTY host process
+│   │   ├── pty-host.js         # ★ PTY host process (node-pty wrapper)
+│   │   └── native-resize.ts    # Windows-specific resize helper (optional)
 │   ├── codeblock/
 │   │   ├── detector.ts         # Code block detection in markdown
 │   │   ├── executor.ts         # Code execution logic
@@ -536,12 +589,12 @@ obsidian-code-unblock-terminal/
 ├── native/
 │   ├── windows/
 │   │   ├── src/
-│   │   │   └── terminal.cc     # C++ implementation
+│   │   │   └── terminal.cc     # C++ implementation (optional resize helper)
 │   │   ├── binding.gyp         # node-gyp config
 │   │   └── package.json
 │   └── prebuilt/
 │       └── win32-x64/
-│           └── terminal.node   # Compiled binary
+│           └── terminal.node   # Compiled binary (optional)
 ├── styles.css                  # Plugin styles
 ├── manifest.json
 ├── package.json
@@ -558,6 +611,49 @@ obsidian-code-unblock-terminal/
 - [ ] PowerShell Core (pwsh) integration
 - [ ] Basic settings tab
 
+#### Phase 1.5: PTY Host Process Architecture (Week 1)
+**Critical architectural change to support node-pty in Obsidian's security-restricted environment**
+
+**Background:** Obsidian's Electron blocks loading non-context-aware native modules in renderer process. node-pty cannot be loaded directly due to `Loading non context-aware native addons has been disabled` error. Solution: Separate PTY host process (VS Code proven architecture).
+
+**Tasks:**
+- [ ] Create `pty-host.js` - standalone Node.js script for PTY operations
+- [ ] Implement IPC protocol between plugin (renderer) and PTY host
+  - Message types: spawn, write, resize, kill
+  - Response handling: data, exit, error events
+- [ ] Update `pty-manager.ts` to use child_process.fork() instead of direct node-pty
+  - Spawn PTY host on first terminal creation
+  - Route all PTY operations through IPC
+  - Handle host process lifecycle (start, stop, crash recovery)
+- [ ] Implement error handling for host process failures
+  - Auto-restart on crash
+  - Graceful degradation if host won't start
+  - User-friendly error messages
+- [ ] Setup platform-specific build and distribution
+  - Use official `node-pty` package (^1.1.0-beta35)
+  - Create GitHub Actions workflow for multi-platform builds
+  - Download platform-specific node-pty prebuilds during CI
+  - Bundle only required .node binary per platform
+  - Generate platform-specific release archives (win32-x64, darwin-x64, darwin-arm64, linux-x64)
+
+**Architecture:**
+```
+Renderer Process (Plugin)          PTY Host Process
+┌─────────────────────┐           ┌──────────────────┐
+│  terminal-view.ts   │           │   pty-host.js    │
+│  xterm-manager.ts   │           │                  │
+│        ↓            │           │                  │
+│  pty-manager.ts ────┼──IPC──────→  node-pty       │
+│  (IPC client)       │  fork()   │  (native addon) │
+└─────────────────────┘           └──────────────────┘
+```
+
+**Benefits:**
+- ✅ No external dependencies for users (Electron includes Node.js)
+- ✅ Bypasses renderer process security restrictions
+- ✅ Isolated crashes don't take down plugin
+- ✅ Proven by VS Code terminal implementation
+
 #### Phase 2: Shell Support (Week 1-2)
 - [ ] Multiple shell profiles
 - [ ] Shell auto-detection
@@ -573,12 +669,27 @@ obsidian-code-unblock-terminal/
 - [ ] Variable substitution dialog
 - [ ] Variable persistence per vault
 
-#### Phase 4: PTY Integration & Native Helpers (Week 2-3)
-- [ ] Integrate node-pty (or custom ConPTY bindings) with the PTY manager module
-- [ ] Wire shell manager/xterm manager streams through the PTY layer
+#### Phase 4: PTY Host Robustness & Native Helpers (Week 2-3)
+- [ ] PTY host process stability improvements
+  - Implement reconnection logic for host crashes
+  - Add health check / heartbeat mechanism
+  - Handle host startup timeout gracefully
+  - Memory leak detection and prevention
+- [ ] IPC protocol enhancements
+  - Message queuing for reliability
+  - Flow control to prevent backpressure
+  - Protocol versioning for future compatibility
 - [ ] Implement Windows native resize helper focused on console buffer adjustments
-- [ ] Ensure clear separation: PTY layer owns process lifecycle; native helper handles resize/window affordances
-- [ ] Build and bundle pre-compiled binaries for the native resize helper
+  - Separate from PTY host (optional addon)
+  - Handles Win32 console buffer manipulation
+  - Graceful degradation if addon unavailable
+- [ ] Build and bundle pre-compiled binaries
+  - node-pty prebuilt .node files for Windows
+  - Native resize helper (if implemented)
+- [ ] Performance optimization
+  - Reduce IPC overhead
+  - Optimize data streaming from PTY host
+  - Batch resize operations
 
 #### Phase 5: Integration & Polish (Week 3-4)
 - [ ] Context menu integration
