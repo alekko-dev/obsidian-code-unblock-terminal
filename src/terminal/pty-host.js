@@ -22,13 +22,34 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 
 // Track active PTY processes by ID
 const ptyProcesses = new Map();
-let nextPtyId = 1;
 
 // node-pty module (loaded after initialization)
 let pty = null;
+
+// Debug logging helper (logs to both file and stderr for troubleshooting)
+const DEBUG = false; // Set to true for detailed logging
+const logFile = path.join(require('os').tmpdir(), 'pty-host-debug.log');
+
+function debugLog(message) {
+	if (!DEBUG) {
+		console.error(message); // Always log to stderr (captured by parent)
+		return;
+	}
+
+	// Full debug mode: log to file with timestamp
+	const timestamp = new Date().toISOString();
+	const logMessage = `[${timestamp}] ${message}\n`;
+	try {
+		fs.appendFileSync(logFile, logMessage, 'utf8');
+	} catch (error) {
+		// Ignore file write errors
+	}
+	console.error(message);
+}
 
 /**
  * Safely send a message to the parent process.
@@ -39,14 +60,15 @@ let pty = null;
  */
 function safeSend(message) {
 	if (!process.send || !process.connected) {
-		console.error('[PTY Host] Cannot send message: parent process disconnected');
+		debugLog('[PTY Host] Cannot send message: parent process disconnected');
 		return false;
 	}
 
 	try {
+		debugLog('[PTY Host] Sending IPC message: ' + message.type);
 		return process.send(message);
 	} catch (error) {
-		console.error('[PTY Host] Failed to send message:', error);
+		debugLog('[PTY Host] Failed to send message: ' + error);
 		return false;
 	}
 }
@@ -56,40 +78,51 @@ function safeSend(message) {
  */
 function initializePTY() {
 	try {
-		// When running as forked process, __dirname is the script location
-		// We need to resolve node-pty from the plugin's node_modules
+		// Determine plugin directory based on script location
+		// In production: pty-host.js is in plugin root
+		// In development: pty-host.js is in src/terminal/
 		const scriptDir = __dirname;
-		const pluginDir = path.resolve(scriptDir, '..', '..');
+		let pluginDir;
+
+		// Check if we're in plugin root by looking for manifest.json
+		if (fs.existsSync(path.join(scriptDir, 'manifest.json'))) {
+			pluginDir = scriptDir;  // Production
+		} else {
+			pluginDir = path.resolve(scriptDir, '..', '..');  // Development
+		}
 
 		// Try official node-pty first (preferred for production)
 		let nodePtyPath = path.join(pluginDir, 'node_modules', 'node-pty');
 		let ptyPackage = 'node-pty';
 
-		// Check if node-pty binary exists
-		const fs = require('fs');
+		// Check if node-pty binary exists, fallback to prebuilt version for development
 		const nodePtyBuildPath = path.join(nodePtyPath, 'build', 'Release', 'pty.node');
-
 		if (!fs.existsSync(nodePtyBuildPath)) {
-			// Fallback to @homebridge/node-pty-prebuilt-multiarch for development
-			console.error('[PTY Host] node-pty binary not found, trying @homebridge/node-pty-prebuilt-multiarch');
 			nodePtyPath = path.join(pluginDir, 'node_modules', '@homebridge', 'node-pty-prebuilt-multiarch');
 			ptyPackage = '@homebridge/node-pty-prebuilt-multiarch';
 		}
 
-		// Load node-pty from plugin directory
+		// Verify the path exists before requiring
+		if (!fs.existsSync(nodePtyPath)) {
+			throw new Error(`node-pty module not found at ${nodePtyPath}. Please ensure dependencies are installed.`);
+		}
+
+		// Load and validate node-pty
 		pty = require(nodePtyPath);
+		if (!pty || typeof pty.spawn !== 'function') {
+			throw new Error(`Failed to load node-pty from ${nodePtyPath}: spawn function not available`);
+		}
 
 		// Send ready signal to parent (using nextTick to avoid race condition)
-		// This ensures the parent process has attached its message handler
 		process.nextTick(() => {
 			safeSend({
 				type: 'ready',
 				message: `PTY host initialized successfully (using ${ptyPackage})`
 			});
 		});
-
-		console.error(`[PTY Host] Initialized successfully (using ${ptyPackage})`);
 	} catch (error) {
+		console.error('[PTY Host] CRITICAL ERROR during initialization:', error);
+
 		// Send error to parent
 		process.nextTick(() => {
 			safeSend({
@@ -102,8 +135,31 @@ function initializePTY() {
 			});
 		});
 
-		console.error('[PTY Host] Failed to initialize:', error);
-		process.exit(1);
+		// Delay exit to allow error message to be sent
+		setTimeout(() => process.exit(1), 100);
+	}
+}
+
+/**
+ * Resolve shell command to full path
+ * node-pty on Windows requires full executable path, not just command name
+ */
+function resolveShellPath(shell) {
+	const { execSync } = require('child_process');
+
+	// If already an absolute path, return as-is
+	if (path.isAbsolute(shell)) {
+		return shell;
+	}
+
+	// Resolve command name to full path
+	try {
+		const cmd = process.platform === 'win32' ? `where ${shell}` : `which ${shell}`;
+		const fullPath = execSync(cmd, { encoding: 'utf8' }).trim().split('\n')[0];
+		debugLog(`[PTY Host] Resolved "${shell}" to "${fullPath}"`);
+		return fullPath;
+	} catch (error) {
+		throw new Error(`Shell not found: ${shell}. Make sure it is installed and in PATH.`);
 	}
 }
 
@@ -118,6 +174,9 @@ function handleSpawn(message) {
 			throw new Error('PTY module not initialized');
 		}
 
+		// Resolve shell to full path (required by node-pty on Windows)
+		const shellPath = resolveShellPath(shell);
+
 		// Extract options with defaults
 		const {
 			cwd = process.cwd(),
@@ -127,7 +186,7 @@ function handleSpawn(message) {
 		} = options;
 
 		// Spawn PTY process
-		const ptyProcess = pty.spawn(shell, args, {
+		const ptyProcess = pty.spawn(shellPath, args, {
 			name: 'xterm-256color',
 			cols,
 			rows,
@@ -166,8 +225,6 @@ function handleSpawn(message) {
 			id,
 			pid: ptyProcess.pid
 		});
-
-		console.error(`[PTY Host] Spawned process ${id} (PID: ${ptyProcess.pid})`);
 	} catch (error) {
 		safeSend({
 			type: 'error',
@@ -317,34 +374,47 @@ function handleMessage(message) {
 /**
  * Handle process termination
  */
-function handleShutdown() {
-	console.error('[PTY Host] Shutting down, killing all PTY processes...');
+function handleShutdown(reason) {
+	debugLog('[PTY Host] Shutting down, reason: ' + reason);
+	debugLog('[PTY Host] Killing all PTY processes...');
 
 	// Kill all active PTY processes
 	for (const [id, ptyProcess] of ptyProcesses.entries()) {
 		try {
 			ptyProcess.kill();
-			console.error(`[PTY Host] Killed process ${id}`);
+			debugLog(`[PTY Host] Killed process ${id}`);
 		} catch (error) {
-			console.error(`[PTY Host] Failed to kill process ${id}:`, error);
+			debugLog(`[PTY Host] Failed to kill process ${id}: ${error}`);
 		}
 	}
 
 	ptyProcesses.clear();
-	process.exit(0);
+
+	// Only exit if we have active PTYs or this is an intentional shutdown
+	// Don't exit on early disconnect during initialization
+	if (reason !== 'disconnect' || ptyProcesses.size > 0) {
+		debugLog('[PTY Host] Exiting process');
+		process.exit(0);
+	} else {
+		debugLog('[PTY Host] Ignoring early disconnect during initialization');
+	}
 }
 
 // Setup IPC message handler
 process.on('message', handleMessage);
 
 // Handle graceful shutdown
-process.on('SIGTERM', handleShutdown);
-process.on('SIGINT', handleShutdown);
-process.on('disconnect', handleShutdown);
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => handleShutdown('SIGINT'));
+process.on('disconnect', () => {
+	debugLog('[PTY Host] Disconnect event fired, process.connected: ' + process.connected);
+	handleShutdown('disconnect');
+});
 
 // Handle uncaught errors
 process.on('uncaughtException', (error) => {
-	console.error('[PTY Host] Uncaught exception:', error);
+	debugLog('[PTY Host] Uncaught exception: ' + error);
+	debugLog('[PTY Host] Stack: ' + error.stack);
 
 	safeSend({
 		type: 'error',
@@ -357,12 +427,13 @@ process.on('uncaughtException', (error) => {
 
 	// Give time for message to be sent
 	setTimeout(() => {
+		debugLog('[PTY Host] Exiting due to uncaught exception');
 		process.exit(1);
 	}, 100);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-	console.error('[PTY Host] Unhandled rejection:', reason);
+	debugLog('[PTY Host] Unhandled rejection: ' + reason);
 
 	safeSend({
 		type: 'error',
@@ -374,5 +445,5 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Initialize PTY module
-console.error('[PTY Host] Starting initialization...');
+debugLog('[PTY Host] Starting initialization...');
 initializePTY();

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { Notice } from 'obsidian';
 import * as path from 'path';
-import { ChildProcess, fork } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 
 export interface PTYOptions {
 	shell: string;
@@ -115,13 +115,34 @@ export class PTYManager extends EventEmitter {
 			console.log('[PTYManager] Starting PTY host process:', ptyHostPath);
 
 			try {
-				// Fork the PTY host process with ELECTRON_RUN_AS_NODE to use Node.js runtime
-				this.hostProcess = fork(ptyHostPath, [], {
-					stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-					env: {
-						...process.env,
-						ELECTRON_RUN_AS_NODE: '1',
-					},
+				// CRITICAL: ELECTRON_RUN_AS_NODE doesn't work when spawned from renderer process
+				// This is a known Electron limitation - the environment variable is ignored
+				// and Electron launches a new app window instead of running as Node.js.
+				//
+				// SOLUTION: Use system Node.js installation to run the PTY host process.
+				// This bypasses Electron entirely and allows node-pty to load correctly.
+
+				const { execSync } = require('child_process');
+				let nodeExecutable: string;
+
+				try {
+					// Find system Node.js executable
+					const nodePath = execSync('where node', { encoding: 'utf8' }).trim().split('\n')[0];
+					console.log('[PTYManager] Using system Node.js:', nodePath);
+					nodeExecutable = nodePath;
+				} catch (error) {
+					// Node.js not found in PATH - this is a critical error
+					throw new Error(
+						'Node.js not found in PATH. Please install Node.js (https://nodejs.org) ' +
+						'to use the terminal feature.'
+					);
+				}
+
+				this.hostProcess = spawn(nodeExecutable, [ptyHostPath], {
+					stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+					env: process.env,
+					detached: false,
+					windowsHide: true,
 				});
 
 				// Handle host ready message
@@ -167,6 +188,11 @@ export class PTYManager extends EventEmitter {
 					console.error('[PTYManager] PTY host error:', error);
 					this.emit('host-error', error);
 					reject(error);
+				});
+
+				// Log host stdout for debugging
+				this.hostProcess.stdout?.on('data', (data) => {
+					console.log('[PTY Host stdout]', data.toString());
 				});
 
 				// Log host stderr for debugging
