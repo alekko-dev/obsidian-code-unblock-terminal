@@ -1,6 +1,8 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
+import fs from "fs";
+import path from "path";
 
 const banner =
 `/*
@@ -10,6 +12,24 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = (process.argv[2] === 'production');
+
+// Plugin to copy pty-host.js to output directory
+const copyPtyHostPlugin = {
+	name: 'copy-pty-host',
+	setup(build) {
+		build.onEnd(() => {
+			const source = 'src/terminal/pty-host.js';
+			const dest = 'pty-host.js';
+			try {
+				fs.copyFileSync(source, dest);
+				console.log(`Copied ${source} to ${dest}`);
+			} catch (error) {
+				console.error(`Failed to copy ${source}:`, error);
+				throw error;
+			}
+		});
+	}
+};
 
 const context = await esbuild.context({
 	banner: {
@@ -46,6 +66,7 @@ const context = await esbuild.context({
 	// Required for native modules
 	mainFields: ['module', 'main'],
 	conditions: ['node'],
+	plugins: [copyPtyHostPlugin],
 });
 
 if (prod) {
