@@ -31,6 +31,27 @@ let nextPtyId = 1;
 let pty = null;
 
 /**
+ * Safely send a message to the parent process.
+ * Prevents crashes if parent is disconnected or send fails.
+ *
+ * @param {object} message - The IPC message to send
+ * @returns {boolean} - True if message was sent successfully
+ */
+function safeSend(message) {
+	if (!process.send || !process.connected) {
+		console.error('[PTY Host] Cannot send message: parent process disconnected');
+		return false;
+	}
+
+	try {
+		return process.send(message);
+	} catch (error) {
+		console.error('[PTY Host] Failed to send message:', error);
+		return false;
+	}
+}
+
+/**
  * Initialize the PTY module
  */
 function initializePTY() {
@@ -58,22 +79,27 @@ function initializePTY() {
 		// Load node-pty from plugin directory
 		pty = require(nodePtyPath);
 
-		// Send ready signal to parent
-		process.send({
-			type: 'ready',
-			message: `PTY host initialized successfully (using ${ptyPackage})`
+		// Send ready signal to parent (using nextTick to avoid race condition)
+		// This ensures the parent process has attached its message handler
+		process.nextTick(() => {
+			safeSend({
+				type: 'ready',
+				message: `PTY host initialized successfully (using ${ptyPackage})`
+			});
 		});
 
 		console.error(`[PTY Host] Initialized successfully (using ${ptyPackage})`);
 	} catch (error) {
 		// Send error to parent
-		process.send({
-			type: 'error',
-			error: {
-				message: error.message,
-				stack: error.stack,
-				code: 'PTY_INIT_FAILED'
-			}
+		process.nextTick(() => {
+			safeSend({
+				type: 'error',
+				error: {
+					message: error.message,
+					stack: error.stack,
+					code: 'PTY_INIT_FAILED'
+				}
+			});
 		});
 
 		console.error('[PTY Host] Failed to initialize:', error);
@@ -115,7 +141,7 @@ function handleSpawn(message) {
 
 		// Setup event handlers
 		ptyProcess.onData((data) => {
-			process.send({
+			safeSend({
 				type: 'data',
 				id,
 				data
@@ -123,7 +149,7 @@ function handleSpawn(message) {
 		});
 
 		ptyProcess.onExit(({ exitCode, signal }) => {
-			process.send({
+			safeSend({
 				type: 'exit',
 				id,
 				exitCode,
@@ -135,7 +161,7 @@ function handleSpawn(message) {
 		});
 
 		// Send success response
-		process.send({
+		safeSend({
 			type: 'spawned',
 			id,
 			pid: ptyProcess.pid
@@ -143,7 +169,7 @@ function handleSpawn(message) {
 
 		console.error(`[PTY Host] Spawned process ${id} (PID: ${ptyProcess.pid})`);
 	} catch (error) {
-		process.send({
+		safeSend({
 			type: 'error',
 			id,
 			error: {
@@ -172,7 +198,7 @@ function handleWrite(message) {
 
 		ptyProcess.write(data);
 	} catch (error) {
-		process.send({
+		safeSend({
 			type: 'error',
 			id,
 			error: {
@@ -202,14 +228,14 @@ function handleResize(message) {
 		ptyProcess.resize(cols, rows);
 
 		// Send acknowledgment
-		process.send({
+		safeSend({
 			type: 'resized',
 			id,
 			cols,
 			rows
 		});
 	} catch (error) {
-		process.send({
+		safeSend({
 			type: 'error',
 			id,
 			error: {
@@ -240,14 +266,14 @@ function handleKill(message) {
 		ptyProcesses.delete(id);
 
 		// Send acknowledgment
-		process.send({
+		safeSend({
 			type: 'killed',
 			id
 		});
 
 		console.error(`[PTY Host] Killed process ${id}`);
 	} catch (error) {
-		process.send({
+		safeSend({
 			type: 'error',
 			id,
 			error: {
@@ -320,7 +346,7 @@ process.on('disconnect', handleShutdown);
 process.on('uncaughtException', (error) => {
 	console.error('[PTY Host] Uncaught exception:', error);
 
-	process.send({
+	safeSend({
 		type: 'error',
 		error: {
 			message: error.message,
@@ -338,7 +364,7 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
 	console.error('[PTY Host] Unhandled rejection:', reason);
 
-	process.send({
+	safeSend({
 		type: 'error',
 		error: {
 			message: String(reason),

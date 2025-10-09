@@ -96,6 +96,10 @@ export class ShellManager extends EventEmitter {
 			this.emit('start', this.ptyProcess.pid);
 		} catch (error) {
 			console.error('Failed to start shell:', error);
+			// Clean up xterm listeners if spawn fails
+			// This prevents dangling event listeners when spawn fails
+			this.disposeXtermListeners();
+			this.ptyProcess = null;
 			this.emit('error', error);
 			throw error;
 		}

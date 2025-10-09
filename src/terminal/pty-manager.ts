@@ -88,7 +88,29 @@ export class PTYManager extends EventEmitter {
 		}
 
 		this.hostInitPromise = new Promise<void>((resolve, reject) => {
-			const ptyHostPath = path.join(this.pluginDir!, 'src', 'terminal', 'pty-host.js');
+			// Try multiple paths for pty-host.js (production and development)
+			const possiblePaths = [
+				path.join(this.pluginDir!, 'pty-host.js'),           // Production (copied to plugin root)
+				path.join(this.pluginDir!, 'src', 'terminal', 'pty-host.js')  // Development
+			];
+
+			const ptyHostPath = possiblePaths.find(p => {
+				try {
+					const fs = require('fs');
+					return fs.existsSync(p);
+				} catch {
+					return false;
+				}
+			});
+
+			if (!ptyHostPath) {
+				const error = new Error(
+					'PTY host script not found. Searched paths:\n' +
+					possiblePaths.join('\n')
+				);
+				reject(error);
+				return;
+			}
 
 			console.log('[PTYManager] Starting PTY host process:', ptyHostPath);
 
@@ -107,6 +129,8 @@ export class PTYManager extends EventEmitter {
 					if (message.type === 'ready') {
 						this.hostReady = true;
 						console.log('[PTYManager] PTY host ready');
+						// Remove this listener to prevent memory leak
+						this.hostProcess!.off('message', readyHandler);
 						resolve();
 					}
 				};
