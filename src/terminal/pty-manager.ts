@@ -126,16 +126,18 @@ export class PTYManager extends EventEmitter {
 				let nodeExecutable: string;
 
 				try {
-					// Find system Node.js executable
-					const nodePath = execSync('where node', { encoding: 'utf8' }).trim().split('\n')[0];
+					// Find system Node.js executable (platform-specific command)
+					const isWindows = process.platform === 'win32';
+					const command = isWindows ? 'where node' : 'which node';
+					const nodePath = execSync(command, { encoding: 'utf8' }).trim().split('\n')[0];
 					console.log('[PTYManager] Using system Node.js:', nodePath);
 					nodeExecutable = nodePath;
 				} catch (error) {
-					// Node.js not found in PATH - this is a critical error
-					throw new Error(
-						'Node.js not found in PATH. Please install Node.js (https://nodejs.org) ' +
-						'to use the terminal feature.'
-					);
+					// Fallback to process.execPath (Electron's Node.js)
+					// This may not work for loading node-pty, but it's better than failing completely
+					console.warn('[PTYManager] Node.js not found in PATH, falling back to process.execPath');
+					nodeExecutable = process.execPath;
+					console.log('[PTYManager] Using fallback Node.js:', nodeExecutable);
 				}
 
 				this.hostProcess = spawn(nodeExecutable, [ptyHostPath], {
