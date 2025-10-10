@@ -611,24 +611,34 @@ obsidian-code-unblock-terminal/
 - [ ] PowerShell Core (pwsh) integration
 - [ ] Basic settings tab
 
-#### Phase 1.5: PTY Host Process Architecture (Week 1)
+#### Phase 1.5: PTY Host Process Architecture (Week 1) ✅ COMPLETED
+
 **Critical architectural change to support node-pty in Obsidian's security-restricted environment**
 
 **Background:** Obsidian's Electron blocks loading non-context-aware native modules in renderer process. node-pty cannot be loaded directly due to `Loading non context-aware native addons has been disabled` error. Solution: Separate PTY host process (VS Code proven architecture).
 
 **Tasks:**
-- [ ] Create `pty-host.js` - standalone Node.js script for PTY operations
-- [ ] Implement IPC protocol between plugin (renderer) and PTY host
+- [x] Create `pty-host.js` - standalone Node.js script for PTY operations
+- [x] Implement IPC protocol between plugin (renderer) and PTY host
   - Message types: spawn, write, resize, kill
   - Response handling: data, exit, error events
-- [ ] Update `pty-manager.ts` to use child_process.fork() instead of direct node-pty
+- [x] Update `pty-manager.ts` to use child_process.spawn() with system Node.js
   - Spawn PTY host on first terminal creation
   - Route all PTY operations through IPC
   - Handle host process lifecycle (start, stop, crash recovery)
-- [ ] Implement error handling for host process failures
+- [x] Implement error handling for host process failures
   - Auto-restart on crash
   - Graceful degradation if host won't start
   - User-friendly error messages
+- [x] **CRITICAL FIX: System Node.js requirement**
+  - ELECTRON_RUN_AS_NODE doesn't work from Electron renderer process
+  - Must use system Node.js installation to run PTY host
+  - Detect Node.js using `where node` command
+  - Provide clear error if Node.js not installed
+- [x] **Shell path resolution for node-pty**
+  - node-pty on Windows requires full executable paths
+  - Resolve command names (e.g., 'pwsh') to full paths (e.g., 'C:\Program Files\PowerShell\7\pwsh.exe')
+  - Uses 'where' on Windows, 'which' on Unix
 - [ ] Setup platform-specific build and distribution
   - Use official `node-pty` package (^1.1.0-beta35)
   - Create GitHub Actions workflow for multi-platform builds
@@ -638,21 +648,48 @@ obsidian-code-unblock-terminal/
 
 **Architecture:**
 ```
-Renderer Process (Plugin)          PTY Host Process
+Renderer Process (Plugin)          PTY Host Process (System Node.js)
 ┌─────────────────────┐           ┌──────────────────┐
 │  terminal-view.ts   │           │   pty-host.js    │
 │  xterm-manager.ts   │           │                  │
 │        ↓            │           │                  │
 │  pty-manager.ts ────┼──IPC──────→  node-pty       │
-│  (IPC client)       │  fork()   │  (native addon) │
+│  (IPC client)       │  spawn()  │  (native addon) │
 └─────────────────────┘           └──────────────────┘
 ```
 
+**Implementation Details:**
+
+1. **System Node.js Detection** (pty-manager.ts:125-139)
+   - Detects Node.js using `execSync('where node')`
+   - Spawns PTY host with: `spawn(nodeExecutable, [ptyHostPath], {...})`
+   - Throws error if Node.js not found in PATH
+   - Requirement: Users must have Node.js installed (https://nodejs.org)
+
+2. **Shell Path Resolution** (pty-host.js:147-164)
+   - Resolves shell commands to full paths before spawning
+   - Example: `'pwsh'` → `'C:\Program Files\PowerShell\7\pwsh.exe'`
+   - Platform-aware: uses 'where' on Windows, 'which' on Unix
+   - Required by node-pty's ConPTY implementation on Windows
+
+3. **IPC Protocol** (pty-host.js)
+   - Messages: spawn, write, resize, kill
+   - Events: ready, spawned, data, exit, error, resized, killed
+   - Error handling: safeSend() prevents crashes on disconnect
+   - Lifecycle: graceful shutdown on SIGTERM/SIGINT/disconnect
+
+**Known Limitations:**
+- ⚠️ **Requires Node.js installation** - Unlike original plan, cannot use Electron's bundled Node.js due to ELECTRON_RUN_AS_NODE limitation
+- ⚠️ **Windows-specific testing** - Shell path resolution tested on Windows, needs verification on macOS/Linux
+- ⚠️ **Development vs Production paths** - PTY host detects environment using manifest.json presence
+
 **Benefits:**
-- ✅ No external dependencies for users (Electron includes Node.js)
+- ✅ No external dependencies beyond Node.js
 - ✅ Bypasses renderer process security restrictions
 - ✅ Isolated crashes don't take down plugin
-- ✅ Proven by VS Code terminal implementation
+- ✅ Clean IPC architecture proven by VS Code
+- ✅ Cross-platform shell path resolution
+- ✅ Graceful error handling and recovery
 
 #### Phase 2: Shell Support (Week 1-2)
 - [ ] Multiple shell profiles

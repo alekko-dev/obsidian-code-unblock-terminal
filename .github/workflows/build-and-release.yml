@@ -60,6 +60,7 @@ jobs:
             main.js
             manifest.json
             styles.css
+            src/terminal/pty-host.js
 
   # Build native binaries per platform
   build-binaries:
@@ -338,6 +339,15 @@ jobs:
 
             if [ -f "artifacts/plugin/styles.css" ]; then
               cp "artifacts/plugin/styles.css" "$RELEASE_DIR/"
+            fi
+
+            # Copy PTY host script (REQUIRED for terminal functionality)
+            if [ -f "artifacts/plugin/src/terminal/pty-host.js" ]; then
+              cp "artifacts/plugin/src/terminal/pty-host.js" "$RELEASE_DIR/"
+              echo "✓ Packaged pty-host.js for $PLATFORM_NAME"
+            else
+              echo "✗ ERROR: pty-host.js not found - terminal will not work"
+              exit 1
             fi
 
             # Copy platform-specific node-pty binaries and package structure (REQUIRED)

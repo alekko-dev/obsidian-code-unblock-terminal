@@ -27,16 +27,24 @@ export class ShellManager extends EventEmitter {
 	private xtermDataDisposable: (() => void) | null = null;
 	private xtermResizeDisposable: (() => void) | null = null;
 
-	constructor(xtermManager: XtermManager) {
+	constructor(xtermManager: XtermManager, pluginDir: string | null = null) {
 		super();
 		this.ptyManager = new PTYManager();
+
+		// Initialize PTY manager with plugin directory
+		if (pluginDir) {
+			this.ptyManager.initialize(pluginDir);
+		} else {
+			console.warn('ShellManager: No plugin directory provided, PTY host may fail to start');
+		}
+
 		this.xtermManager = xtermManager;
 	}
 
 	/**
 	 * Start a shell session with the specified profile
 	 */
-	start(profile: ShellProfile, cwd?: string): void {
+	async start(profile: ShellProfile, cwd?: string): Promise<void> {
 		if (this.ptyProcess) {
 			console.warn('Shell already running, killing existing process');
 			this.stop();
@@ -49,7 +57,7 @@ export class ShellManager extends EventEmitter {
 
 		// Spawn the PTY process
 		try {
-			this.ptyProcess = this.ptyManager.spawn({
+			this.ptyProcess = await this.ptyManager.spawn({
 				shell: profile.shell,
 				args: profile.args,
 				cwd,
@@ -88,6 +96,10 @@ export class ShellManager extends EventEmitter {
 			this.emit('start', this.ptyProcess.pid);
 		} catch (error) {
 			console.error('Failed to start shell:', error);
+			// Clean up xterm listeners if spawn fails
+			// This prevents dangling event listeners when spawn fails
+			this.disposeXtermListeners();
+			this.ptyProcess = null;
 			this.emit('error', error);
 			throw error;
 		}

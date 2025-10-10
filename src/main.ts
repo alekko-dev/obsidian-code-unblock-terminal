@@ -10,9 +10,27 @@ import { TerminalView, TERMINAL_VIEW_TYPE } from './terminal/terminal-view';
 export default class CodeUnblockTerminalPlugin extends Plugin {
 	settings: CodeUnblockTerminalSettings = DEFAULT_SETTINGS;
 	private terminalView: TerminalView | null = null;
+	private pluginDir: string | null = null;
 
 	async onload() {
 		console.log('Loading Code Unblock Terminal plugin');
+
+		// Determine absolute plugin directory path
+		// manifest.dir is relative to the vault, so we need to get the absolute path
+		const vaultPath = (this.app.vault.adapter as any).basePath;
+		// @ts-ignore - manifest.dir is available but not in type definitions
+		const pluginDirRelative = this.manifest.dir;
+
+		if (pluginDirRelative && vaultPath) {
+			const path = require('path');
+			this.pluginDir = path.join(vaultPath, pluginDirRelative);
+			console.log('Vault path:', vaultPath);
+			console.log('Plugin relative dir:', pluginDirRelative);
+			console.log('Plugin absolute dir:', this.pluginDir);
+		} else {
+			console.error('Could not determine plugin directory - PTY initialization may fail');
+			console.error('vaultPath:', vaultPath, 'pluginDir:', pluginDirRelative);
+		}
 
 		// Load settings
 		await this.loadSettings();
@@ -21,7 +39,7 @@ export default class CodeUnblockTerminalPlugin extends Plugin {
 		this.registerView(
 			TERMINAL_VIEW_TYPE,
 			(leaf) => {
-				this.terminalView = new TerminalView(leaf, this);
+				this.terminalView = new TerminalView(leaf, this, this.pluginDir);
 				return this.terminalView;
 			}
 		);
