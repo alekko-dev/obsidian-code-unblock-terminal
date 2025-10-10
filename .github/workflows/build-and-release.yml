@@ -206,13 +206,16 @@ jobs:
           if [ -n "$PREVIOUS_PACKAGE_VERSION" ] && [ "$PREVIOUS_PACKAGE_VERSION" != "null" ]; then
             if [ "$CURRENT_PACKAGE_VERSION" = "$PREVIOUS_PACKAGE_VERSION" ]; then
               echo "⏭️  Version unchanged at $CURRENT_PACKAGE_VERSION - release will be skipped"
+              echo "⏭️  Version unchanged at $CURRENT_PACKAGE_VERSION - release will be skipped" >> "$GITHUB_STEP_SUMMARY"
               echo "changed=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
             echo "✓ Version bumped from $PREVIOUS_PACKAGE_VERSION to $CURRENT_PACKAGE_VERSION"
+            echo "✓ Version bumped from $PREVIOUS_PACKAGE_VERSION to $CURRENT_PACKAGE_VERSION" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "⚠️  No previous version detected; treating current version as a new release"
+            echo "⚠️  No previous version detected; treating current version as a new release" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -227,6 +230,8 @@ jobs:
     concurrency:
       group: release-${{ github.ref }}
       cancel-in-progress: false
+    env:
+      PLUGIN_VERSION: ${{ needs.check-version-bump.outputs.current_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -245,6 +250,8 @@ jobs:
 
       - name: Extract metadata from manifest
         id: manifest
+        env:
+          EXPECTED_VERSION: ${{ env.PLUGIN_VERSION }}
         run: |
           set -euo pipefail
 
@@ -268,6 +275,11 @@ jobs:
             exit 1
           fi
 
+          if [ -n "$EXPECTED_VERSION" ] && [ "$EXPECTED_VERSION" != "$VERSION" ]; then
+            echo "✗ ERROR: Version mismatch between manifest.json ($VERSION) and detected release version ($EXPECTED_VERSION)" >&2
+            exit 1
+          fi
+
           echo "plugin_id=$ID" >> "$GITHUB_OUTPUT"
           echo "plugin_version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -279,9 +291,9 @@ jobs:
       - name: Ensure release version is unique
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ env.PLUGIN_VERSION }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.manifest.outputs.plugin_version }}"
 
           git fetch --quiet --tags
 
@@ -297,25 +309,12 @@ jobs:
 
           echo "✓ Version v$VERSION is available for release"
 
-      - name: Create git tag
-        env:
-          VERSION: ${{ steps.manifest.outputs.plugin_version }}
-        run: |
-          set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git fetch --quiet --tags
-          git tag -a "v$VERSION" -m "Release v$VERSION"
-          git push origin "v$VERSION"
-
       - name: Package plugin with platform-specific binaries
         id: package
         run: |
           set -euo pipefail
           PLUGIN_ID="${{ steps.manifest.outputs.plugin_id }}"
-          VERSION="${{ steps.manifest.outputs.plugin_version }}"
+          VERSION="${{ env.PLUGIN_VERSION }}"
 
           # Create packages for each platform
           for OS in windows-latest ubuntu-latest macos-latest; do
@@ -413,17 +412,17 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.manifest.outputs.plugin_version }}
-          name: ${{ steps.manifest.outputs.plugin_id }} v${{ steps.manifest.outputs.plugin_version }}
+          tag_name: v${{ env.PLUGIN_VERSION }}
+          name: ${{ steps.manifest.outputs.plugin_id }} v${{ env.PLUGIN_VERSION }}
           files: ${{ steps.package.outputs.release_dir }}/*.zip
           generate_release_notes: true
           body: |
             ## Platform-Specific Builds
 
             This release includes separate packages for each platform:
-            - **Windows**: `${{ steps.manifest.outputs.plugin_id }}-windows-v${{ steps.manifest.outputs.plugin_version }}.zip`
-            - **Linux**: `${{ steps.manifest.outputs.plugin_id }}-linux-v${{ steps.manifest.outputs.plugin_version }}.zip`
-            - **macOS**: `${{ steps.manifest.outputs.plugin_id }}-macos-v${{ steps.manifest.outputs.plugin_version }}.zip`
+            - **Windows**: `${{ steps.manifest.outputs.plugin_id }}-windows-v${{ env.PLUGIN_VERSION }}.zip`
+            - **Linux**: `${{ steps.manifest.outputs.plugin_id }}-linux-v${{ env.PLUGIN_VERSION }}.zip`
+            - **macOS**: `${{ steps.manifest.outputs.plugin_id }}-macos-v${{ env.PLUGIN_VERSION }}.zip`
 
             ## Installation Instructions
 
