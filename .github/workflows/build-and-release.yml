@@ -147,75 +147,91 @@ jobs:
             node_modules/node-pty/build/
             node_modules/node-pty/prebuilds/
 
-  check-code-changes:
-    name: Check for code changes
+  check-version-bump:
+    name: Ensure version bump
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     outputs:
-      code_changed: ${{ steps.check.outputs.changed }}
+      version_changed: ${{ steps.version_check.outputs.changed }}
+      current_version: ${{ steps.version_check.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Check if plugin code changed
-        id: check
+      - name: Verify version files
+        id: version_check
         run: |
           set -euo pipefail
 
-          # Get the list of changed files in the last commit
-          CHANGED_FILES=$(git diff --name-only HEAD^..HEAD || echo "")
-
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
-          echo ""
-
-          # Define patterns for plugin code (not docs/workflows)
-          PLUGIN_CODE_PATTERNS=(
-            '^src/'
-            '^manifest\.json$'
-            '^package\.json$'
-            '^package-lock\.json$'
-            '^tsconfig\.json$'
-            '^esbuild\.config\.mjs$'
-            '^styles\.css$'
-            '^versions\.json$'
-          )
-
-          # Check if any changed file matches plugin code patterns
-          CODE_CHANGED=false
-          while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            for pattern in "${PLUGIN_CODE_PATTERNS[@]}"; do
-              if echo "$file" | grep -qE "$pattern"; then
-                echo "✓ Plugin code changed: $file (matches $pattern)"
-                CODE_CHANGED=true
-                break
-              fi
-            done
-          done <<< "$CHANGED_FILES"
-
-          if [ "$CODE_CHANGED" = true ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo ""
-            echo "✓ Plugin code was modified - release will proceed"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo ""
-            echo "⏭️  Only docs/workflows changed - release will be skipped"
+          if [ ! -f package.json ]; then
+            echo "package.json is missing" >&2
+            exit 1
           fi
+
+          if [ ! -f manifest.json ]; then
+            echo "manifest.json is missing" >&2
+            exit 1
+          fi
+
+          CURRENT_PACKAGE_VERSION=$(jq -r '.version // empty' package.json)
+          CURRENT_MANIFEST_VERSION=$(jq -r '.version // empty' manifest.json)
+
+          if [ -z "$CURRENT_PACKAGE_VERSION" ] || [ "$CURRENT_PACKAGE_VERSION" = "null" ]; then
+            echo "package.json must contain a semantic version" >&2
+            exit 1
+          fi
+
+          if [ -z "$CURRENT_MANIFEST_VERSION" ] || [ "$CURRENT_MANIFEST_VERSION" = "null" ]; then
+            echo "manifest.json must contain a semantic version" >&2
+            exit 1
+          fi
+
+          if [ "$CURRENT_PACKAGE_VERSION" != "$CURRENT_MANIFEST_VERSION" ]; then
+            echo "✗ ERROR: package.json version ($CURRENT_PACKAGE_VERSION) does not match manifest.json version ($CURRENT_MANIFEST_VERSION)" >&2
+            exit 1
+          fi
+
+          echo "✓ package.json and manifest.json share version $CURRENT_PACKAGE_VERSION"
+          echo "version=$CURRENT_PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+          PREVIOUS_PACKAGE_VERSION=""
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            if git show HEAD^:package.json > /tmp/prev_package.json 2>/dev/null; then
+              PREVIOUS_PACKAGE_VERSION=$(jq -r '.version // empty' /tmp/prev_package.json)
+            fi
+          fi
+
+          if [ -n "$PREVIOUS_PACKAGE_VERSION" ] && [ "$PREVIOUS_PACKAGE_VERSION" != "null" ]; then
+            if [ "$CURRENT_PACKAGE_VERSION" = "$PREVIOUS_PACKAGE_VERSION" ]; then
+              echo "⏭️  Version unchanged at $CURRENT_PACKAGE_VERSION - release will be skipped"
+              echo "⏭️  Version unchanged at $CURRENT_PACKAGE_VERSION - release will be skipped" >> "$GITHUB_STEP_SUMMARY"
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "✓ Version bumped from $PREVIOUS_PACKAGE_VERSION to $CURRENT_PACKAGE_VERSION"
+            echo "✓ Version bumped from $PREVIOUS_PACKAGE_VERSION to $CURRENT_PACKAGE_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️  No previous version detected; treating current version as a new release"
+            echo "⚠️  No previous version detected; treating current version as a new release" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [build-plugin, build-binaries, check-code-changes]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-code-changes.outputs.code_changed == 'true'
+    needs: [build-plugin, build-binaries, check-version-bump]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-version-bump.outputs.version_changed == 'true'
     permissions:
       contents: write
     concurrency:
       group: release-${{ github.ref }}
       cancel-in-progress: false
+    env:
+      PLUGIN_VERSION: ${{ needs.check-version-bump.outputs.current_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -234,6 +250,8 @@ jobs:
 
       - name: Extract metadata from manifest
         id: manifest
+        env:
+          EXPECTED_VERSION: ${{ env.PLUGIN_VERSION }}
         run: |
           set -euo pipefail
 
@@ -257,6 +275,11 @@ jobs:
             exit 1
           fi
 
+          if [ -n "$EXPECTED_VERSION" ] && [ "$EXPECTED_VERSION" != "$VERSION" ]; then
+            echo "✗ ERROR: Version mismatch between manifest.json ($VERSION) and detected release version ($EXPECTED_VERSION)" >&2
+            exit 1
+          fi
+
           echo "plugin_id=$ID" >> "$GITHUB_OUTPUT"
           echo "plugin_version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -268,9 +291,9 @@ jobs:
       - name: Ensure release version is unique
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ env.PLUGIN_VERSION }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.manifest.outputs.plugin_version }}"
 
           git fetch --quiet --tags
 
@@ -291,7 +314,7 @@ jobs:
         run: |
           set -euo pipefail
           PLUGIN_ID="${{ steps.manifest.outputs.plugin_id }}"
-          VERSION="${{ steps.manifest.outputs.plugin_version }}"
+          VERSION="${{ env.PLUGIN_VERSION }}"
 
           # Create packages for each platform
           for OS in windows-latest ubuntu-latest macos-latest; do
@@ -389,17 +412,17 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.manifest.outputs.plugin_version }}
-          name: ${{ steps.manifest.outputs.plugin_id }} v${{ steps.manifest.outputs.plugin_version }}
+          tag_name: v${{ env.PLUGIN_VERSION }}
+          name: ${{ steps.manifest.outputs.plugin_id }} v${{ env.PLUGIN_VERSION }}
           files: ${{ steps.package.outputs.release_dir }}/*.zip
           generate_release_notes: true
           body: |
             ## Platform-Specific Builds
 
             This release includes separate packages for each platform:
-            - **Windows**: `${{ steps.manifest.outputs.plugin_id }}-windows-v${{ steps.manifest.outputs.plugin_version }}.zip`
-            - **Linux**: `${{ steps.manifest.outputs.plugin_id }}-linux-v${{ steps.manifest.outputs.plugin_version }}.zip`
-            - **macOS**: `${{ steps.manifest.outputs.plugin_id }}-macos-v${{ steps.manifest.outputs.plugin_version }}.zip`
+            - **Windows**: `${{ steps.manifest.outputs.plugin_id }}-windows-v${{ env.PLUGIN_VERSION }}.zip`
+            - **Linux**: `${{ steps.manifest.outputs.plugin_id }}-linux-v${{ env.PLUGIN_VERSION }}.zip`
+            - **macOS**: `${{ steps.manifest.outputs.plugin_id }}-macos-v${{ env.PLUGIN_VERSION }}.zip`
 
             ## Installation Instructions
 
