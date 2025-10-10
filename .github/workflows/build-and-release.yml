@@ -147,70 +147,81 @@ jobs:
             node_modules/node-pty/build/
             node_modules/node-pty/prebuilds/
 
-  check-code-changes:
-    name: Check for code changes
+  check-version-bump:
+    name: Ensure version bump
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     outputs:
-      code_changed: ${{ steps.check.outputs.changed }}
+      version_changed: ${{ steps.version_check.outputs.changed }}
+      current_version: ${{ steps.version_check.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Check if plugin code changed
-        id: check
+      - name: Verify version files
+        id: version_check
         run: |
           set -euo pipefail
 
-          # Get the list of changed files in the last commit
-          CHANGED_FILES=$(git diff --name-only HEAD^..HEAD || echo "")
-
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
-          echo ""
-
-          # Define patterns for plugin code (not docs/workflows)
-          PLUGIN_CODE_PATTERNS=(
-            '^src/'
-            '^manifest\.json$'
-            '^package\.json$'
-            '^package-lock\.json$'
-            '^tsconfig\.json$'
-            '^esbuild\.config\.mjs$'
-            '^styles\.css$'
-            '^versions\.json$'
-          )
-
-          # Check if any changed file matches plugin code patterns
-          CODE_CHANGED=false
-          while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            for pattern in "${PLUGIN_CODE_PATTERNS[@]}"; do
-              if echo "$file" | grep -qE "$pattern"; then
-                echo "✓ Plugin code changed: $file (matches $pattern)"
-                CODE_CHANGED=true
-                break
-              fi
-            done
-          done <<< "$CHANGED_FILES"
-
-          if [ "$CODE_CHANGED" = true ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo ""
-            echo "✓ Plugin code was modified - release will proceed"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo ""
-            echo "⏭️  Only docs/workflows changed - release will be skipped"
+          if [ ! -f package.json ]; then
+            echo "package.json is missing" >&2
+            exit 1
           fi
+
+          if [ ! -f manifest.json ]; then
+            echo "manifest.json is missing" >&2
+            exit 1
+          fi
+
+          CURRENT_PACKAGE_VERSION=$(jq -r '.version // empty' package.json)
+          CURRENT_MANIFEST_VERSION=$(jq -r '.version // empty' manifest.json)
+
+          if [ -z "$CURRENT_PACKAGE_VERSION" ] || [ "$CURRENT_PACKAGE_VERSION" = "null" ]; then
+            echo "package.json must contain a semantic version" >&2
+            exit 1
+          fi
+
+          if [ -z "$CURRENT_MANIFEST_VERSION" ] || [ "$CURRENT_MANIFEST_VERSION" = "null" ]; then
+            echo "manifest.json must contain a semantic version" >&2
+            exit 1
+          fi
+
+          if [ "$CURRENT_PACKAGE_VERSION" != "$CURRENT_MANIFEST_VERSION" ]; then
+            echo "✗ ERROR: package.json version ($CURRENT_PACKAGE_VERSION) does not match manifest.json version ($CURRENT_MANIFEST_VERSION)" >&2
+            exit 1
+          fi
+
+          echo "✓ package.json and manifest.json share version $CURRENT_PACKAGE_VERSION"
+          echo "version=$CURRENT_PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+          PREVIOUS_PACKAGE_VERSION=""
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            if git show HEAD^:package.json > /tmp/prev_package.json 2>/dev/null; then
+              PREVIOUS_PACKAGE_VERSION=$(jq -r '.version // empty' /tmp/prev_package.json)
+            fi
+          fi
+
+          if [ -n "$PREVIOUS_PACKAGE_VERSION" ] && [ "$PREVIOUS_PACKAGE_VERSION" != "null" ]; then
+            if [ "$CURRENT_PACKAGE_VERSION" = "$PREVIOUS_PACKAGE_VERSION" ]; then
+              echo "⏭️  Version unchanged at $CURRENT_PACKAGE_VERSION - release will be skipped"
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "✓ Version bumped from $PREVIOUS_PACKAGE_VERSION to $CURRENT_PACKAGE_VERSION"
+          else
+            echo "⚠️  No previous version detected; treating current version as a new release"
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [build-plugin, build-binaries, check-code-changes]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-code-changes.outputs.code_changed == 'true'
+    needs: [build-plugin, build-binaries, check-version-bump]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check-version-bump.outputs.version_changed == 'true'
     permissions:
       contents: write
     concurrency:
@@ -285,6 +296,19 @@ jobs:
           fi
 
           echo "✓ Version v$VERSION is available for release"
+
+      - name: Create git tag
+        env:
+          VERSION: ${{ steps.manifest.outputs.plugin_version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch --quiet --tags
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
 
       - name: Package plugin with platform-specific binaries
         id: package
