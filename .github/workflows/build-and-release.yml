@@ -54,13 +54,13 @@ jobs:
       - name: Upload plugin artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: plugin-code
+          name: plugin-files
           retention-days: 30
           path: |
             main.js
             manifest.json
             styles.css
-            src/terminal/pty-host.js
+            pty-host.js
 
   # Build native binaries per platform
   build-binaries:
@@ -233,10 +233,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download plugin code
+      - name: Download plugin files
         uses: actions/download-artifact@v4
         with:
-          name: plugin-code
+          name: plugin-files
           path: artifacts/plugin
 
       - name: Download binary artifacts
@@ -346,8 +346,8 @@ jobs:
             fi
 
             # Copy PTY host script (REQUIRED for terminal functionality)
-            if [ -f "artifacts/plugin/src/terminal/pty-host.js" ]; then
-              cp "artifacts/plugin/src/terminal/pty-host.js" "$RELEASE_DIR/"
+            if [ -f "artifacts/plugin/pty-host.js" ]; then
+              cp "artifacts/plugin/pty-host.js" "$RELEASE_DIR/"
               echo "✓ Packaged pty-host.js for $PLATFORM_NAME"
             else
               echo "✗ ERROR: pty-host.js not found - terminal will not work"
