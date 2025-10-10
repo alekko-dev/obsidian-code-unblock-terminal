@@ -1,6 +1,6 @@
 {
   "name": "obsidian-code-unblock-terminal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Obsidian plugin that integrates terminals with seamless code block execution",
   "main": "main.js",
   "scripts": {
