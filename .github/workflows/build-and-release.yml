@@ -54,13 +54,13 @@ jobs:
       - name: Upload plugin artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: plugin-code
+          name: plugin-files
           retention-days: 30
           path: |
             main.js
             manifest.json
             styles.css
-            src/terminal/pty-host.js
+            pty-host.js
 
   # Build native binaries per platform
   build-binaries:
@@ -142,11 +142,7 @@ jobs:
         with:
           name: binaries-${{ matrix.os }}
           retention-days: 30
-          path: |
-            node_modules/node-pty/package.json
-            node_modules/node-pty/lib/
-            node_modules/node-pty/build/
-            node_modules/node-pty/prebuilds/
+          path: node_modules/node-pty/
 
   check-version-bump:
     name: Ensure version bump
@@ -237,10 +233,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download plugin code
+      - name: Download plugin files
         uses: actions/download-artifact@v4
         with:
-          name: plugin-code
+          name: plugin-files
           path: artifacts/plugin
 
       - name: Download binary artifacts
@@ -317,6 +313,14 @@ jobs:
           PLUGIN_ID="${{ steps.manifest.outputs.plugin_id }}"
           VERSION="${{ env.PLUGIN_VERSION }}"
 
+          # Debug: Verify artifact structure
+          echo "Verifying downloaded artifact structure..."
+          for OS in windows-latest ubuntu-latest macos-latest; do
+            echo "Structure of binaries-$OS:"
+            ls -R "artifacts/binaries-$OS/" || echo "⚠ binaries-$OS not found"
+            echo ""
+          done
+
           # Create packages for each platform
           for OS in windows-latest ubuntu-latest macos-latest; do
             case "$OS" in
@@ -342,8 +346,8 @@ jobs:
             fi
 
             # Copy PTY host script (REQUIRED for terminal functionality)
-            if [ -f "artifacts/plugin/src/terminal/pty-host.js" ]; then
-              cp "artifacts/plugin/src/terminal/pty-host.js" "$RELEASE_DIR/"
+            if [ -f "artifacts/plugin/pty-host.js" ]; then
+              cp "artifacts/plugin/pty-host.js" "$RELEASE_DIR/"
               echo "✓ Packaged pty-host.js for $PLATFORM_NAME"
             else
               echo "✗ ERROR: pty-host.js not found - terminal will not work"
@@ -354,9 +358,9 @@ jobs:
             BINARY_FOUND=false
 
             # Copy package.json (required for Node.js module resolution)
-            if [ -f "artifacts/binaries-$OS/node_modules/node-pty/package.json" ]; then
+            if [ -f "artifacts/binaries-$OS/node-pty/package.json" ]; then
               mkdir -p "$RELEASE_DIR/node_modules/node-pty"
-              cp "artifacts/binaries-$OS/node_modules/node-pty/package.json" \
+              cp "artifacts/binaries-$OS/node-pty/package.json" \
                 "$RELEASE_DIR/node_modules/node-pty/"
               echo "✓ Packaged node-pty package.json for $PLATFORM_NAME"
             else
@@ -366,9 +370,9 @@ jobs:
             fi
 
             # Copy lib directory (JavaScript implementation and type definitions)
-            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/lib" ]; then
+            if [ -d "artifacts/binaries-$OS/node-pty/lib" ]; then
               mkdir -p "$RELEASE_DIR/node_modules/node-pty"
-              cp -r "artifacts/binaries-$OS/node_modules/node-pty/lib" \
+              cp -r "artifacts/binaries-$OS/node-pty/lib" \
                 "$RELEASE_DIR/node_modules/node-pty/"
               echo "✓ Packaged node-pty lib directory for $PLATFORM_NAME"
             else
@@ -376,18 +380,18 @@ jobs:
             fi
 
             # Check build/Release directory
-            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/build/Release" ]; then
+            if [ -d "artifacts/binaries-$OS/node-pty/build/Release" ]; then
               mkdir -p "$RELEASE_DIR/node_modules/node-pty/build"
-              cp -r "artifacts/binaries-$OS/node_modules/node-pty/build/Release" \
+              cp -r "artifacts/binaries-$OS/node-pty/build/Release" \
                 "$RELEASE_DIR/node_modules/node-pty/build/"
               echo "✓ Packaged binaries from build/Release for $PLATFORM_NAME"
               BINARY_FOUND=true
             fi
 
             # Check prebuilds directory
-            if [ -d "artifacts/binaries-$OS/node_modules/node-pty/prebuilds" ]; then
+            if [ -d "artifacts/binaries-$OS/node-pty/prebuilds" ]; then
               mkdir -p "$RELEASE_DIR/node_modules/node-pty"
-              cp -r "artifacts/binaries-$OS/node_modules/node-pty/prebuilds" \
+              cp -r "artifacts/binaries-$OS/node-pty/prebuilds" \
                 "$RELEASE_DIR/node_modules/node-pty/"
               echo "✓ Packaged prebuilt binaries for $PLATFORM_NAME"
               BINARY_FOUND=true
