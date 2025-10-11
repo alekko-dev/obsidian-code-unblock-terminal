@@ -197,6 +197,40 @@ jobs:
           echo "✓ package.json and manifest.json share version $CURRENT_PACKAGE_VERSION"
           echo "version=$CURRENT_PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
 
+          # Validate versions.json
+          if [ ! -f versions.json ]; then
+            echo "✗ ERROR: versions.json is missing" >&2
+            echo "This file is required for Obsidian plugin compatibility tracking." >&2
+            echo "Create it with: { \"$CURRENT_PACKAGE_VERSION\": \"<minAppVersion>\" }" >&2
+            exit 1
+          fi
+
+          # Check if current version exists in versions.json
+          VERSIONS_MIN_APP=$(jq -r --arg ver "$CURRENT_PACKAGE_VERSION" '.[$ver] // empty' versions.json)
+          if [ -z "$VERSIONS_MIN_APP" ] || [ "$VERSIONS_MIN_APP" = "null" ]; then
+            echo "✗ ERROR: versions.json is missing entry for version $CURRENT_PACKAGE_VERSION" >&2
+            echo "Add entry: \"$CURRENT_PACKAGE_VERSION\": \"<minAppVersion>\"" >&2
+            echo "" >&2
+            echo "This usually means version-bump.mjs didn't run." >&2
+            echo "Use 'npm version patch/minor/major' instead of manually editing version numbers." >&2
+            exit 1
+          fi
+
+          # Validate minAppVersion matches between versions.json and manifest.json
+          MANIFEST_MIN_APP=$(jq -r '.minAppVersion // empty' manifest.json)
+          if [ -z "$MANIFEST_MIN_APP" ] || [ "$MANIFEST_MIN_APP" = "null" ]; then
+            echo "✗ ERROR: manifest.json is missing minAppVersion field" >&2
+            exit 1
+          fi
+
+          if [ "$VERSIONS_MIN_APP" != "$MANIFEST_MIN_APP" ]; then
+            echo "✗ ERROR: versions.json minAppVersion for $CURRENT_PACKAGE_VERSION ($VERSIONS_MIN_APP) doesn't match manifest.json minAppVersion ($MANIFEST_MIN_APP)" >&2
+            echo "These values must be identical for proper Obsidian compatibility tracking." >&2
+            exit 1
+          fi
+
+          echo "✓ versions.json has valid entry for $CURRENT_PACKAGE_VERSION (minAppVersion: $MANIFEST_MIN_APP)"
+
           PREVIOUS_PACKAGE_VERSION=""
           if git rev-parse HEAD^ >/dev/null 2>&1; then
             if git show HEAD^:package.json > /tmp/prev_package.json 2>/dev/null; then

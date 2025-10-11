@@ -116,6 +116,73 @@ the plugin will load but terminal features won't work (you'll see a
 - The plugin will hot-reload in Obsidian when you rebuild (may need to toggle the plugin)
 - Check the Obsidian developer console (Ctrl+Shift+I) for errors
 
+### Version Bump Workflow
+
+**Always use npm's version command to bump versions. Never manually edit version numbers.**
+
+#### Correct Way to Bump Version
+
+```bash
+# Bump patch version (0.2.2 → 0.2.3)
+npm version patch
+
+# Bump minor version (0.2.2 → 0.3.0)
+npm version minor
+
+# Bump major version (0.2.2 → 1.0.0)
+npm version major
+```
+
+#### What Happens Automatically
+
+When you run `npm version`, the following happens automatically via the `version` script in package.json:
+
+1. **npm increments version** in `package.json`
+2. **version-bump.mjs runs** and:
+   - Updates `manifest.json` with the new version
+   - Adds entry to `versions.json` mapping version to minAppVersion
+3. **Files are staged** with `git add manifest.json versions.json`
+4. **npm creates commit** with message matching the version number
+5. **npm creates git tag** (e.g., `v0.2.3`)
+
+#### Files That Must Stay in Sync
+
+These three files must always have matching version numbers:
+- `package.json` - npm package version
+- `manifest.json` - Obsidian plugin version (what users see)
+- `versions.json` - Compatibility map (version → minAppVersion)
+
+#### Why Manual Edits Cause Problems
+
+If you manually edit version numbers in package.json or manifest.json:
+- ❌ `version-bump.mjs` doesn't run
+- ❌ `versions.json` doesn't get updated
+- ❌ No git commit or tag created automatically
+- ❌ CI/CD may not detect the version change correctly
+- ❌ Obsidian users won't see compatibility information
+
+#### Troubleshooting Version Issues
+
+**If versions are out of sync:**
+```bash
+# Check current versions
+jq '.version' package.json manifest.json
+jq '.' versions.json
+
+# Fix by running version bump again
+npm version <current-version> --allow-same-version
+```
+
+**If you need to fix versions.json manually:**
+```json
+{
+  "0.1.0": "1.4.11",
+  "0.2.0": "1.4.11",
+  "0.2.2": "1.4.11"
+}
+```
+Each key is a plugin version, each value is the minimum Obsidian version required.
+
 ## Project Structure
 
 ```
