@@ -1,6 +1,8 @@
 import { PTYManager, PTYProcess } from './pty-manager';
 import { XtermManager } from './xterm-manager';
 import { EventEmitter } from 'events';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
 export interface ShellProfile {
 	name: string;
@@ -206,14 +208,12 @@ export class ShellManager extends EventEmitter {
 	 * Check if a command is available in PATH
 	 */
 	private static async isCommandAvailable(command: string): Promise<boolean> {
-		try {
-			const { exec } = require('child_process');
-			const util = require('util');
-			const execPromise = util.promisify(exec);
+                try {
+                        const execPromise = promisify(exec);
 
-			const checkCommand = process.platform === 'win32'
-				? `where ${command}`
-				: `which ${command}`;
+                        const checkCommand = process.platform === 'win32'
+                                ? `where ${command}`
+                                : `which ${command}`;
 
 			await execPromise(checkCommand);
 			return true;

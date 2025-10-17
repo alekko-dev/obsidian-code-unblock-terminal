@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "version": "node version-bump.mjs && git add manifest.json versions.json"
+    "version": "node version-bump.mjs && git add manifest.json versions.json",
+    "lint": "eslint 'src/**/*.{ts,tsx}' --max-warnings=0",
+    "lint:fix": "eslint 'src/**/*.{ts,tsx}' --fix"
   },
   "keywords": [
     "obsidian",
@@ -20,6 +22,7 @@
     "@types/node": "^20.10.0",
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.57.1",
     "builtin-modules": "^3.3.0",
     "electron": "^37.0.0",
     "esbuild": "^0.19.10",

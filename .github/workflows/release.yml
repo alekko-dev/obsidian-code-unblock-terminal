@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine run ID and ref
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+            echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_id=" >> "$GITHUB_OUTPUT"
+            echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download plugin artifact from Build
+        if: ${{ steps.meta.outputs.run_id != '' }}
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          run_id: ${{ steps.meta.outputs.run_id }}
+          name: plugin-files
+          path: artifacts/plugin
+
+      - name: Download binaries artifacts from Build
+        if: ${{ steps.meta.outputs.run_id != '' }}
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          run_id: ${{ steps.meta.outputs.run_id }}
+          name: "node-pty-binaries-windows-latest,node-pty-binaries-ubuntu-latest,node-pty-binaries-macos-latest"
+          path: artifacts
+
+      - name: Fallback build (manual dispatch)
+        if: ${{ steps.meta.outputs.run_id == '' }}
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm run build
+          mkdir -p artifacts/plugin
+          cp main.js manifest.json styles.css pty-host.js artifacts/plugin/
+
+      - name: Extract version and plugin id
+        id: manifest
+        run: |
+          set -euo pipefail
+          ID=$(jq -r '.id // empty' manifest.json)
+          VER=$(jq -r '.version // empty' manifest.json)
+          if [ -z "$ID" ] || [ "$ID" = "null" ]; then ID=$(basename "$GITHUB_REPOSITORY"); fi
+          test -n "$VER" && [ "$VER" != "null" ]
+          echo "plugin_id=$ID" >> "$GITHUB_OUTPUT"
+          echo "plugin_version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Package per platform
+        id: package
+        run: |
+          set -euo pipefail
+          PLUGIN_ID=${{ steps.manifest.outputs.plugin_id }}
+          VERSION=${{ steps.manifest.outputs.plugin_version }}
+          mkdir -p release
+
+          # Map artifact dirs when downloaded via dawidd6/action-download-artifact
+          declare -A OS_MAP=( [windows-latest]=windows [ubuntu-latest]=linux [macos-latest]=macos )
+
+          for OS in windows-latest ubuntu-latest macos-latest; do
+            PLATFORM_NAME=${OS_MAP[$OS]}
+            RELEASE_DIR="release/$PLATFORM_NAME"
+            mkdir -p "$RELEASE_DIR/node_modules/node-pty"
+
+            # Core plugin files
+            cp artifacts/plugin/main.js "$RELEASE_DIR/" || true
+            cp artifacts/plugin/manifest.json "$RELEASE_DIR/" || true
+            cp artifacts/plugin/styles.css "$RELEASE_DIR/" || true
+            cp artifacts/plugin/pty-host.js "$RELEASE_DIR/" || true
+
+            # Required node-pty structure from artifacts
+            SRC="artifacts/node-pty-binaries-$OS"
+            if [ ! -d "$SRC" ]; then
+              echo "⚠ Skipping $OS: artifacts not found"
+              continue
+            fi
+            cp "$SRC/package.json" "$RELEASE_DIR/node_modules/node-pty/"
+            [ -d "$SRC/lib" ] && cp -r "$SRC/lib" "$RELEASE_DIR/node_modules/node-pty/"
+            if [ -d "$SRC/build/Release" ]; then
+              mkdir -p "$RELEASE_DIR/node_modules/node-pty/build"
+              cp -r "$SRC/build/Release" "$RELEASE_DIR/node_modules/node-pty/build/"
+            fi
+            [ -d "$SRC/prebuilds" ] && cp -r "$SRC/prebuilds" "$RELEASE_DIR/node_modules/node-pty/"
+
+            # Normalize permissions and zip
+            find "$RELEASE_DIR" -type f -exec chmod 644 {} \;
+            find "$RELEASE_DIR" -type d -exec chmod 755 {} \;
+            (cd "$RELEASE_DIR" && zip -r "../$PLUGIN_ID-$PLATFORM_NAME-v$VERSION.zip" .)
+          done
+
+          echo "dir=release" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release (tag must exist)
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.manifest.outputs.plugin_version }}
+          name: ${{ steps.manifest.outputs.plugin_id }} v${{ steps.manifest.outputs.plugin_version }}
+          files: ${{ steps.package.outputs.dir }}/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
