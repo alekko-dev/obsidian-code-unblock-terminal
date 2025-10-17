@@ -82,6 +82,12 @@ npm run build
 
 # Type check only (no build)
 npx tsc -noEmit
+
+# Lint (fail on warnings)
+npm run lint
+
+# Lint with auto-fix
+npm run lint:fix
 ```
 
 ### Testing in Obsidian

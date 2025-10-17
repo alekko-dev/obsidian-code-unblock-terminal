@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ '**' ]
+    tags-ignore: [ '**' ]
+  workflow_dispatch: {}
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  checks:
+    name: Lint, Type Check, Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (fast)
+        run: npm ci --ignore-scripts
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc -noEmit
+
+      - name: Build (production)
+        run: npm run build
+
+      - name: Sanity checks
+        run: |
+          set -euo pipefail
+          # Files exist
+          test -f main.js && echo "✓ main.js"
+          test -f manifest.json && echo "✓ manifest.json"
+          test -f styles.css && echo "✓ styles.css"
+          test -f pty-host.js && echo "✓ pty-host.js"
+
+          # Versions in sync
+          PKG_VER=$(jq -r .version package.json)
+          MAN_VER=$(jq -r .version manifest.json)
+          test "$PKG_VER" = "$MAN_VER" || { echo "Version mismatch: $PKG_VER != $MAN_VER"; exit 1; }
+          jq -e "has(\"$PKG_VER\")" versions.json >/dev/null
+          echo "✓ versions in sync ($PKG_VER)"
+
+          # Bundle basics
+          SIZE=$(wc -c < main.js)
+          test "$SIZE" -gt 10000 || { echo "main.js too small ($SIZE)"; exit 1; }
+          grep -q "require(\"node-pty\")" main.js && echo "✓ node-pty externalized"
+
+      - name: Upload plugin artifact (for PR review)
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-files
+          path: |
+            main.js
+            manifest.json
+            styles.css
+            pty-host.js
+          retention-days: 7
+

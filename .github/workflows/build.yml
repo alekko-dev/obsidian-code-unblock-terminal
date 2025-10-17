@@ -1,0 +1,104 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch: {}
+  workflow_call: {}
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  build-plugin:
+    name: Build plugin code
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (no native rebuild)
+        run: npm ci --ignore-scripts
+
+      - name: Build (production)
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          set -euo pipefail
+          test -f main.js && test -s main.js
+          test -f manifest.json
+          test -f styles.css
+          test -f pty-host.js
+          echo "✓ plugin bundle ready"
+
+      - name: Upload plugin artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-files
+          path: |
+            main.js
+            manifest.json
+            styles.css
+            pty-host.js
+          retention-days: 30
+
+  build-binaries:
+    name: Build native binaries
+    needs: build-plugin
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Setup Python (for node-gyp)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Electron for rebuild
+        run: npm i -D electron@37.0.0
+
+      - name: Rebuild node-pty for Electron 37
+        run: npx @electron/rebuild -f -w node-pty
+
+      - name: Verify node-pty binary exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          BINARY_PATH="node_modules/node-pty/build/Release/pty.node"
+          test -f "$BINARY_PATH" && echo "✓ Found $BINARY_PATH"
+
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-pty-binaries-${{ matrix.os }}
+          path: |
+            node_modules/node-pty/package.json
+            node_modules/node-pty/lib/
+            node_modules/node-pty/build/Release/
+            node_modules/node-pty/prebuilds/
+          retention-days: 30
+
