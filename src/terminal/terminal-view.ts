@@ -1,7 +1,9 @@
-import { ItemView, WorkspaceLeaf, Notice } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, FileSystemAdapter } from 'obsidian';
 import { XtermManager } from './xterm-manager';
 import { ShellManager, ShellProfile } from './shell-manager';
 import CodeUnblockTerminalPlugin from '../main';
+import * as fs from 'fs';
+import { homedir } from 'os';
 
 export const TERMINAL_VIEW_TYPE = 'code-unblock-terminal-view';
 
@@ -34,10 +36,10 @@ export class TerminalView extends ItemView {
 	}> = [];
 
 	// Track shell event listeners for cleanup
-	private shellEventListeners: Array<{
-		event: string;
-		handler: (...args: any[]) => void;
-	}> = [];
+        private shellEventListeners: Array<{
+                event: string;
+                handler: (...args: unknown[]) => void;
+        }> = [];
 
 	constructor(leaf: WorkspaceLeaf, plugin: CodeUnblockTerminalPlugin, pluginDir: string | null = null) {
 		super(leaf);
@@ -403,24 +405,23 @@ export class TerminalView extends ItemView {
 	private getWorkingDirectory(): string {
 		try {
 			// Type-safe access to vault path
-			const adapter = this.app.vault.adapter;
-			if ('basePath' in adapter && typeof adapter.basePath === 'string') {
-				// Validate path exists and is accessible
-				const fs = require('fs');
-				if (fs.existsSync(adapter.basePath)) {
-					const stats = fs.statSync(adapter.basePath);
-					if (stats.isDirectory()) {
-						return adapter.basePath;
-					}
-				}
-			}
-		} catch (error) {
-			console.warn('Could not determine vault path:', error);
-		}
+                        const adapter = this.app.vault.adapter;
+                        if (adapter instanceof FileSystemAdapter) {
+                                const basePath = adapter.getBasePath();
+                                if (fs.existsSync(basePath)) {
+                                        const stats = fs.statSync(basePath);
+                                        if (stats.isDirectory()) {
+                                                return basePath;
+                                        }
+                                }
+                        }
+                } catch (error) {
+                        console.warn('Could not determine vault path:', error);
+                }
 
-		// Fallback to user home directory
-		return require('os').homedir();
-	}
+                // Fallback to user home directory
+                return homedir();
+        }
 
 	/**
 	 * Get the xterm manager instance

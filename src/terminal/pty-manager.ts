@@ -1,7 +1,8 @@
 import { EventEmitter } from 'events';
 import { Notice } from 'obsidian';
 import * as path from 'path';
-import { ChildProcess, spawn } from 'child_process';
+import * as fs from 'fs';
+import { ChildProcess, spawn, execSync } from 'child_process';
 
 export interface PTYOptions {
 	shell: string;
@@ -25,9 +26,9 @@ export interface PTYProcess {
  * IPC Message types for PTY host communication
  */
 interface IPCMessage {
-	type: string;
-	id?: number;
-	[key: string]: any;
+        type: string;
+        id?: number;
+        [key: string]: unknown;
 }
 
 /**
@@ -89,19 +90,12 @@ export class PTYManager extends EventEmitter {
 
 		this.hostInitPromise = new Promise<void>((resolve, reject) => {
 			// Try multiple paths for pty-host.js (production and development)
-			const possiblePaths = [
-				path.join(this.pluginDir!, 'pty-host.js'),           // Production (copied to plugin root)
-				path.join(this.pluginDir!, 'src', 'terminal', 'pty-host.js')  // Development
-			];
+                        const possiblePaths = [
+                                path.join(this.pluginDir!, 'pty-host.js'),           // Production (copied to plugin root)
+                                path.join(this.pluginDir!, 'src', 'terminal', 'pty-host.js')  // Development
+                        ];
 
-			const ptyHostPath = possiblePaths.find(p => {
-				try {
-					const fs = require('fs');
-					return fs.existsSync(p);
-				} catch {
-					return false;
-				}
-			});
+                        const ptyHostPath = possiblePaths.find((candidatePath) => fs.existsSync(candidatePath));
 
 			if (!ptyHostPath) {
 				const error = new Error(
@@ -122,11 +116,10 @@ export class PTYManager extends EventEmitter {
 				// SOLUTION: Use system Node.js installation to run the PTY host process.
 				// This bypasses Electron entirely and allows node-pty to load correctly.
 
-				const { execSync } = require('child_process');
-				let nodeExecutable: string;
+                                let nodeExecutable: string;
 
-				try {
-					// Find system Node.js executable (platform-specific command)
+                                try {
+                                        // Find system Node.js executable (platform-specific command)
 					const isWindows = process.platform === 'win32';
 					const command = isWindows ? 'where node' : 'which node';
 					const nodePath = execSync(command, { encoding: 'utf8' }).trim().split('\n')[0];

@@ -1,4 +1,5 @@
-import { Plugin, WorkspaceLeaf } from 'obsidian';
+import { FileSystemAdapter, Plugin } from 'obsidian';
+import * as path from 'path';
 import { CodeUnblockTerminalSettings, CodeUnblockTerminalSettingTab, DEFAULT_SETTINGS } from './settings';
 import { TerminalView, TERMINAL_VIEW_TYPE } from './terminal/terminal-view';
 
@@ -17,18 +18,17 @@ export default class CodeUnblockTerminalPlugin extends Plugin {
 
 		// Determine absolute plugin directory path
 		// manifest.dir is relative to the vault, so we need to get the absolute path
-		const vaultPath = (this.app.vault.adapter as any).basePath;
-		// @ts-ignore - manifest.dir is available but not in type definitions
-		const pluginDirRelative = this.manifest.dir;
+                const adapter = this.app.vault.adapter;
+                const pluginDirRelative = this.manifest.dir;
+                const vaultPath = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
 
-		if (pluginDirRelative && vaultPath) {
-			const path = require('path');
-			this.pluginDir = path.join(vaultPath, pluginDirRelative);
-			console.log('Vault path:', vaultPath);
-			console.log('Plugin relative dir:', pluginDirRelative);
-			console.log('Plugin absolute dir:', this.pluginDir);
-		} else {
-			console.error('Could not determine plugin directory - PTY initialization may fail');
+                if (pluginDirRelative && vaultPath) {
+                        this.pluginDir = path.join(vaultPath, pluginDirRelative);
+                        console.log('Vault path:', vaultPath);
+                        console.log('Plugin relative dir:', pluginDirRelative);
+                        console.log('Plugin absolute dir:', this.pluginDir);
+                } else {
+                        console.error('Could not determine plugin directory - PTY initialization may fail');
 			console.error('vaultPath:', vaultPath, 'pluginDir:', pluginDirRelative);
 		}
 
@@ -45,9 +45,9 @@ export default class CodeUnblockTerminalPlugin extends Plugin {
 		);
 
 		// Add ribbon icon
-		this.addRibbonIcon('terminal', 'Toggle terminal', async (evt: MouseEvent) => {
-			await this.toggleTerminalView();
-		});
+                this.addRibbonIcon('terminal', 'Toggle terminal', async () => {
+                        await this.toggleTerminalView();
+                });
 
 		// Add commands
 		this.addCommand({
