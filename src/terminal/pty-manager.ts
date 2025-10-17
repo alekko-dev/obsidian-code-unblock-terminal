@@ -5,31 +5,121 @@ import * as fs from 'fs';
 import { ChildProcess, spawn, execSync } from 'child_process';
 
 export interface PTYOptions {
-	shell: string;
-	args?: string[];
-	cwd?: string;
-	env?: { [key: string]: string };
-	cols?: number;
-	rows?: number;
+  shell: string;
+  args?: string[];
+  cwd?: string;
+  env?: { [key: string]: string };
+  cols?: number;
+  rows?: number;
 }
 
 export interface PTYProcess {
-	pid: number;
-	onData: (callback: (data: string) => void) => void;
-	onExit: (callback: (code: number, signal?: number) => void) => void;
-	write: (data: string) => void;
-	resize: (cols: number, rows: number) => void;
-	kill: (signal?: string) => void;
+  pid: number;
+  onData: (callback: (data: string) => void) => void;
+  onExit: (callback: (code: number, signal?: number) => void) => void;
+  write: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  kill: (signal?: string) => void;
 }
 
-/**
- * IPC Message types for PTY host communication
- */
-interface IPCMessage {
-        type: string;
-        id?: number;
-        [key: string]: unknown;
-}
+type HostErrorPayload = {
+  message: string;
+  stack?: string;
+  code?: string;
+};
+
+type HostEvent =
+  | { type: 'ready'; message?: string }
+  | { type: 'spawned'; id: number; pid: number }
+  | { type: 'data'; id: number; data: string }
+  | { type: 'exit'; id: number; exitCode: number; signal?: number }
+  | { type: 'error'; id?: number; error: HostErrorPayload }
+  | { type: 'resized'; id: number; cols: number; rows: number }
+  | { type: 'killed'; id: number };
+
+type EnvironmentVariables = Record<string, string | undefined>;
+
+type HostRequest =
+  | {
+      type: 'spawn';
+      id: number;
+      shell: string;
+      args: string[];
+      options: {
+        cwd: string;
+        env: EnvironmentVariables;
+        cols: number;
+        rows: number;
+      };
+    }
+  | { type: 'write'; id: number; data: string }
+  | { type: 'resize'; id: number; cols: number; rows: number }
+  | { type: 'kill'; id: number; signal?: string };
+
+type SpawnRequest = Extract<HostRequest, { type: 'spawn' }>;
+
+const isHostEvent = (message: unknown): message is HostEvent => {
+  if (!message || typeof message !== 'object') {
+    return false;
+  }
+
+  const { type } = message as { type?: unknown };
+
+  if (typeof type !== 'string') {
+    return false;
+  }
+
+  switch (type) {
+    case 'ready':
+      return true;
+    case 'spawned': {
+      const { id, pid } = message as { id?: unknown; pid?: unknown };
+      return typeof id === 'number' && typeof pid === 'number';
+    }
+    case 'data': {
+      const { id, data } = message as { id?: unknown; data?: unknown };
+      return typeof id === 'number' && typeof data === 'string';
+    }
+    case 'exit': {
+      const { id, exitCode, signal } = message as {
+        id?: unknown;
+        exitCode?: unknown;
+        signal?: unknown;
+      };
+      return (
+        typeof id === 'number' &&
+        typeof exitCode === 'number' &&
+        (typeof signal === 'number' || typeof signal === 'undefined')
+      );
+    }
+    case 'error': {
+      const { error } = message as { error?: unknown };
+      return (
+        !!error &&
+        typeof error === 'object' &&
+        typeof (error as { message?: unknown }).message === 'string'
+      );
+    }
+    case 'resized': {
+      const { id, cols, rows } = message as {
+        id?: unknown;
+        cols?: unknown;
+        rows?: unknown;
+      };
+      return (
+        typeof id === 'number' &&
+        typeof cols === 'number' &&
+        typeof rows === 'number'
+      );
+    }
+    case 'killed': {
+      const { id } = message as { id?: unknown };
+      return typeof id === 'number';
+    }
+    default:
+      return false;
+  }
+};
 
 /**
  * PTYManager provides a unified interface for spawning and managing shell processes
@@ -88,7 +178,7 @@ export class PTYManager extends EventEmitter {
 			throw new Error('PTYManager not initialized. Call initialize() first.');
 		}
 
-		this.hostInitPromise = new Promise<void>((resolve, reject) => {
+                this.hostInitPromise = new Promise<void>((resolve, reject) => {
 			// Try multiple paths for pty-host.js (production and development)
                         const possiblePaths = [
                                 path.join(this.pluginDir!, 'pty-host.js'),           // Production (copied to plugin root)
@@ -140,21 +230,31 @@ export class PTYManager extends EventEmitter {
 					windowsHide: true,
 				});
 
-				// Handle host ready message
-				const readyHandler = (message: IPCMessage) => {
-					if (message.type === 'ready') {
-						this.hostReady = true;
-						console.log('[PTYManager] PTY host ready');
-						// Remove this listener to prevent memory leak
-						this.hostProcess!.off('message', readyHandler);
-						resolve();
-					}
-				};
+                                const handleRawMessage = (rawMessage: unknown) => {
+                                        if (!isHostEvent(rawMessage)) {
+                                                console.error('[PTYManager] Received invalid message from host:', rawMessage);
+                                                return;
+                                        }
 
-				this.hostProcess.on('message', readyHandler);
+                                        if (!this.hostReady) {
+                                                if (rawMessage.type === 'ready') {
+                                                        this.hostReady = true;
+                                                        console.log('[PTYManager] PTY host ready');
+                                                        resolve();
+                                                } else if (rawMessage.type === 'error') {
+                                                        const errorMessage = rawMessage.error.message || 'Unknown PTY host error';
+                                                        const hostError = new Error(errorMessage);
+                                                        this.emit('host-error', hostError);
+                                                        reject(hostError);
+                                                        return;
+                                                }
+                                        }
 
-				// Setup message handlers
-				this.hostProcess.on('message', this.handleHostMessage.bind(this));
+                                        this.handleHostMessage(rawMessage);
+                                };
+
+                                // Setup message handler
+                                this.hostProcess.on('message', handleRawMessage);
 
 				// Handle host exit
 				this.hostProcess.on('exit', (code, signal) => {
@@ -235,84 +335,71 @@ export class PTYManager extends EventEmitter {
 	/**
 	 * Handle messages from PTY host process
 	 */
-	private handleHostMessage(message: IPCMessage): void {
-		if (!message || !message.type) {
-			console.error('[PTYManager] Received invalid message from host:', message);
-			return;
-		}
+        private handleHostMessage(message: HostEvent): void {
+                switch (message.type) {
+                        case 'ready':
+                                // Already handled in startHost()
+                                break;
 
-		const { type, id } = message;
+                        case 'spawned': {
+                                const pty = this.activePTYs.get(message.id);
+                                if (pty) {
+                                        pty.pid = message.pid;
+                                        this.emit('spawn', message.id, message.pid);
+                                }
+                                break;
+                        }
 
-		switch (type) {
-			case 'ready':
-				// Already handled in startHost()
-				break;
+                        case 'data': {
+                                const pty = this.activePTYs.get(message.id);
+                                if (pty) {
+                                        pty.dataCallbacks.forEach(callback => callback(message.data));
+                                }
+                                break;
+                        }
 
-			case 'spawned':
-				if (typeof id === 'number') {
-					const pty = this.activePTYs.get(id);
-					if (pty) {
-						pty.pid = message.pid;
-						this.emit('spawn', id, message.pid);
-					}
-				}
-				break;
+                        case 'exit': {
+                                const pty = this.activePTYs.get(message.id);
+                                if (pty) {
+                                        pty.exitCallbacks.forEach(callback =>
+                                                callback(message.exitCode, message.signal)
+                                        );
+                                        this.activePTYs.delete(message.id);
+                                        this.emit('exit', message.id, message.exitCode, message.signal);
+                                }
+                                break;
+                        }
 
-			case 'data':
-				if (typeof id === 'number') {
-					const pty = this.activePTYs.get(id);
-					if (pty) {
-						pty.dataCallbacks.forEach(callback => callback(message.data));
-					}
-				}
-				break;
+                        case 'error': {
+                                console.error('[PTYManager] PTY host error:', message.error);
+                                if (typeof message.id === 'number') {
+                                        this.emit('error', message.id, message.error);
+                                }
+                                break;
+                        }
 
-			case 'exit':
-				if (typeof id === 'number') {
-					const pty = this.activePTYs.get(id);
-					if (pty) {
-						pty.exitCallbacks.forEach(callback =>
-							callback(message.exitCode, message.signal)
-						);
-						this.activePTYs.delete(id);
-						this.emit('exit', id, message.exitCode, message.signal);
-					}
-				}
-				break;
+                        case 'resized':
+                                this.emit('resize', message.id, message.cols, message.rows);
+                                break;
 
-			case 'error':
-				console.error('[PTYManager] PTY host error:', message.error);
-				if (typeof id === 'number') {
-					this.emit('error', id, message.error);
-				}
-				break;
+                        case 'killed':
+                                this.activePTYs.delete(message.id);
+                                break;
 
-			case 'resized':
-				if (typeof id === 'number') {
-					this.emit('resize', id, message.cols, message.rows);
-				}
-				break;
-
-			case 'killed':
-				if (typeof id === 'number') {
-					this.activePTYs.delete(id);
-				}
-				break;
-
-			default:
-				console.warn('[PTYManager] Unknown message type from host:', type);
-		}
+                        default:
+                                console.warn('[PTYManager] Unknown message type from host:', message);
+                }
 	}
 
 	/**
 	 * Send message to PTY host process
 	 */
-	private sendToHost(message: IPCMessage): void {
-		if (!this.hostProcess || !this.hostReady) {
-			throw new Error('PTY host not ready. Cannot send message.');
-		}
+        private sendToHost(message: HostRequest): void {
+                if (!this.hostProcess || !this.hostReady) {
+                        throw new Error('PTY host not ready. Cannot send message.');
+                }
 
-		this.hostProcess.send(message);
+                this.hostProcess.send(message);
 	}
 
 	/**
@@ -338,18 +425,20 @@ export class PTYManager extends EventEmitter {
 		this.activePTYs.set(id, ptyData);
 
 		// Send spawn request to host
-		this.sendToHost({
-			type: 'spawn',
-			id,
-			shell,
-			args,
-			options: {
-				cwd: cwd || process.cwd(),
-				env: env ? { ...process.env, ...env } : process.env,
-				cols,
-				rows,
-			},
-		});
+                const spawnOptions: SpawnRequest['options'] = {
+                        cwd: cwd ?? process.cwd(),
+                        env: { ...process.env, ...(env ?? {}) },
+                        cols,
+                        rows,
+                };
+
+                this.sendToHost({
+                        type: 'spawn',
+                        id,
+                        shell,
+                        args,
+                        options: spawnOptions,
+                });
 
 		// Create PTYProcess interface
 		const processInterface: PTYProcess = {
